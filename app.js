@@ -147,6 +147,13 @@ async function load(range) {
     ...timeNames.map((n) => gh(F('logDir') + '/' + n)),
   ]);
   const timeFiles = rest;
+  // daily update (written by Claude as JSON) + its archive
+  let update = null, updateDates = [];
+  if (F('update')) {
+    const [u, arch] = await Promise.all([gh(F('update')), gh(F('updateArchive'), true)]);
+    try { update = u ? JSON.parse(u) : null; } catch { update = null; }
+    try { updateDates = JSON.parse(arch || '[]').map((f) => f.name).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n)).map((n) => n.slice(0, 10)).sort(); } catch { /* none yet */ }
+  }
   const parsedLogs = await Promise.all(logFiles.map(async (f) => {
     const c = LS.get('log:' + f.name, null);
     if (c && c.sha === f.sha) return c.r;
@@ -190,7 +197,7 @@ async function load(range) {
   }
   for (const r of spendLog) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
 
-  return { today, days, weights, deadlines, spends, gym, runs, habits, spendLog, weightRows, cfg: CFG, fetched: Date.now() };
+  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, habits, spendLog, weightRows, cfg: CFG, fetched: Date.now() };
 }
 
 // ---------- tiny charts ----------
@@ -370,6 +377,60 @@ const CARDS = [
   } },
 ];
 
+// ---------- update tab ----------
+// update.json: { date, generated, headline, sections: [{ title, highlight?, note?, items?: [item], groups?: [{ label, items }] }] }
+// item: { text, meta?, tone?: good|warn|bad|muted|focus } · text may use **bold**
+let tab = null, updShown = null; // updShown = archive date being viewed (null = latest)
+const updCache = {};
+const md = (s) => esc(s || '').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+const itemHtml = (it) => typeof it === 'string' ? `<li>${md(it)}</li>`
+  : `<li class="${esc(it.tone || '')}"><span>${md(it.text)}</span>${it.meta ? `<span class="meta">${md(it.meta)}</span>` : ''}</li>`;
+
+async function renderUpdate() {
+  const el = $('#update');
+  const latest = DATA.update;
+  let u = latest;
+  if (updShown && updShown !== latest?.date) {
+    u = updCache[updShown];
+    if (!u) {
+      el.innerHTML = '<p class="status">Loading…</p>';
+      try { u = updCache[updShown] = JSON.parse(await gh(`${F('updateArchive')}/${updShown}.json`)); } catch (e) { el.innerHTML = `<p class="status">Couldn’t load ${esc(updShown)}: ${esc(e.message)}</p>`; return; }
+    }
+  }
+  if (!u) { el.innerHTML = '<article class="card"><h2>Daily update</h2><p class="sub">No update yet. Run it in Claude ("let\'s do the update") and it shows up here.</p></article>'; return; }
+  const dates = [...new Set([...DATA.updateDates, latest?.date].filter(Boolean))].sort();
+  const i = dates.indexOf(u.date);
+  const stale = u === latest && u.date !== DATA.today;
+  el.innerHTML = `
+    <div class="upd-head">
+      <button class="cal-nav" id="upd-prev" aria-label="Older update" ${i > 0 ? '' : 'disabled'}>‹</button>
+      <div><b>${short(u.date)}</b>${u.generated ? `<span class="sub"> · ${new Date(u.generated).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: CFG.timezone })}</span>` : ''}</div>
+      <button class="cal-nav" id="upd-next" aria-label="Newer update" ${i >= 0 && i < dates.length - 1 ? '' : 'disabled'}>›</button>
+    </div>
+    ${stale ? `<p class="stale">No update yet today, this is ${short(u.date)}’s.</p>` : ''}
+    ${u.headline ? `<p class="headline">${md(u.headline)}</p>` : ''}
+    ${(u.sections || []).map((s) => `<article class="card upd">
+      <h2>${esc(s.title)}</h2>
+      ${s.highlight ? `<p class="focus">${md(s.highlight)}</p>` : ''}
+      ${s.note ? `<p class="sub">${md(s.note)}</p>` : ''}
+      ${s.items?.length ? `<ul class="list upd-list">${s.items.map(itemHtml).join('')}</ul>` : ''}
+      ${(s.groups || []).map((g) => `<h3>${esc(g.label)}</h3><ul class="list upd-list">${(g.items || []).map(itemHtml).join('')}</ul>`).join('')}
+    </article>`).join('')}`;
+  const go = (d) => { updShown = d === latest?.date ? null : d; renderUpdate(); };
+  $('#upd-prev').addEventListener('click', () => go(dates[i - 1]));
+  $('#upd-next').addEventListener('click', () => go(dates[i + 1]));
+  if (u === latest && latest.generated) LS.set('seenUpdate', latest.generated);
+}
+
+function showTab(t) {
+  tab = t; LS.set('tab', t);
+  document.querySelectorAll('.tabs button').forEach((b) => { const on = b.dataset.tab === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+  $('#update').hidden = t !== 'update';
+  $('#cards').hidden = $('#today').hidden = $('.range').hidden = t !== 'stats';
+  render();
+}
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
 // ---------- render ----------
 let DATA = null;
 let range = LS.get('range', 7);
@@ -383,6 +444,7 @@ const hidden = () => new Set(LS.get('hidden', []));
 
 function render() {
   if (!DATA) return;
+  if (tab === 'update') { renderUpdate(); return; }
   window.renderToday?.();
   const first = Object.keys(DATA.days).sort()[0] || DATA.today;
   const from = range === 'all' ? first : addDays(DATA.today, -(range - 1));
@@ -416,10 +478,12 @@ async function refresh() {
   try {
     DATA = await load(range === 'all' ? 'all' : Math.max(range, 30));
     LS.set('last', DATA);
+    if (!tab) showTab(DATA.update?.generated && DATA.update.generated !== LS.get('seenUpdate', null) ? 'update' : 'stats');
     $('#status').textContent = 'Updated ' + new Date(DATA.fetched).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   } catch (e) {
     $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : (e instanceof TypeError ? 'Offline or GitHub unreachable' : 'Couldn’t load') + ', showing the last data: ' + e.message;
   }
+  if (!tab) showTab(LS.get('tab', 'stats') === 'update' ? 'update' : 'stats');
   render();
 }
 
@@ -458,6 +522,6 @@ $('#close-settings').addEventListener('click', () => { $('#settings').hidden = t
 
 DATA = LS.get('last', null);
 if (DATA?.cfg) { CFG = DATA.cfg; fmtKey = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }); }
-render();
+showTab(LS.get('tab', 'stats') === 'update' ? 'update' : 'stats'); tab = null; // real choice once fresh data is in
 refresh();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

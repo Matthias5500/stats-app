@@ -12,7 +12,10 @@
 </head>
 <body>
 <header class="top">
-  <h1>Stats</h1>
+  <div class="tabs" role="tablist" aria-label="View">
+    <button data-tab="update" role="tab">Update</button>
+    <button data-tab="stats" role="tab">Stats</button>
+  </div>
   <div class="range" role="group" aria-label="Time range">
     <button data-range="7" class="on">7d</button>
     <button data-range="30">30d</button>
@@ -22,6 +25,7 @@
   <button id="open-settings" class="icon-btn" aria-label="Settings">⚙</button>
 </header>
 <p id="status" class="status"></p>
+<section id="update" class="update" aria-label="Daily update" hidden></section>
 <section id="today" class="today" aria-label="Today"></section>
 <main id="cards" class="cards"></main>
 <section id="sheet" class="sheet" hidden></section>
