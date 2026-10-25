@@ -149,11 +149,13 @@ async function load(range) {
   const gym = csv(gymText), runs = csv(runText);
   for (const r of gym) day(r.date).gym = true;
   for (const r of runs) day(r.date).run = true;
-  for (const r of csv(habitText)) {
+  const habits = csv(habitText), spendLog = csv(spendText);
+  for (const r of habits) {
     if (r.habit === 'floss') day(r.date).floss = true;
     if (r.habit === 'asleep' && r.value) day(r.date).asleep = r.value;
   }
-  const weights = csv(weightText).filter((r) => r.kg).map((r) => ({ date: r.date, kg: Number(r.kg), note: r.note || '' }))
+  const weightRows = csv(weightText);
+  const weights = weightRows.filter((r) => r.kg).map((r) => ({ date: r.date, kg: Number(r.kg), note: r.note || '' }))
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const deadlines = mdTable(deadlineText).map((c) => ({ c, m: (c[0] || '').match(/(\d{4}-\d{2}-\d{2})/) }))
@@ -169,9 +171,9 @@ async function load(range) {
     const e = Number(c[4].replace(/[^\d.]/g, '')) * (/^\s*[+−-]/.test(c[4]) ? -1 : 1); // "+€" = money back
     if (e) spends.push({ date: c[0], what: strip(c[1]), cat: strip(c[3]), eur: e });
   }
-  for (const r of csv(spendText)) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
+  for (const r of spendLog) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
 
-  return { today, days, weights, deadlines, spends, gym, runs, cfg: CFG, fetched: Date.now() };
+  return { today, days, weights, deadlines, spends, gym, runs, habits, spendLog, weightRows, cfg: CFG, fetched: Date.now() };
 }
 
 // ---------- tiny charts ----------
@@ -332,7 +334,6 @@ async function refresh() {
   try {
     DATA = await load(range === 'all' ? 'all' : Math.max(range, 30));
     LS.set('last', DATA);
-    if (LS.get('queue', []).length) window.flush?.();
     $('#status').textContent = 'Updated ' + new Date(DATA.fetched).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   } catch (e) {
     $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : (e instanceof TypeError ? 'Offline or GitHub unreachable' : 'Couldn’t load') + ', showing the last data: ' + e.message;

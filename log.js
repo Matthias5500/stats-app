@@ -1,6 +1,6 @@
-// Quick-logs: write rows to the data repo's CSVs (paths from stats.json).
-// Every save is one commit starting with "app:" so sessions on the repo side can list what came from here.
-// Writes go through a queue kept on the device, so a bad connection (gym wifi) never loses an entry.
+// Quick-logs: rows for the data repo's CSVs (paths from stats.json).
+// Nothing is written right away: every log (and every undo) lands in an "unsaved" list on the device.
+// Save writes the whole list as ONE commit starting with "app:", so sessions on the repo side can list it.
 
 const HEADERS = {
   weight: 'date,time,kg,note',
@@ -15,60 +15,89 @@ const line = (vals) => vals.map(cell).join(',');
 const clock = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: CFG.timezone || 'UTC', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(ms));
 const kg = (v) => String(Math.round(Number(v) * 100) / 100);
 
-// ---------- GitHub write ----------
-const b64e = (s) => { let bin = ''; new TextEncoder().encode(s).forEach((b) => (bin += String.fromCharCode(b))); return btoa(bin); };
+// ---------- staging ----------
+// item: { id, kind, op: 'add' | 'del', rows (add) | match (del: every field must equal), label, marks: today's chips }
+const staged = () => LS.get('staged', []);
+function stage(item) {
+  LS.set('staged', [...staged(), { id: Date.now() + Math.random(), date: nowKey(), ...item }]);
+  toast((item.op === 'del' ? 'Undo noted: ' : 'Noted: ') + item.label + ' · hit Save to keep it');
+  renderToday();
+}
+const unstage = (id) => { LS.set('staged', staged().filter((x) => x.id !== id)); renderToday(); };
+
+// ---------- GitHub: all staged changes in one commit (git data API) ----------
 const b64d = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
+const sameRow = (row, match) => Object.entries(match).every(([k, v]) => (row[k] ?? '') === String(v ?? ''));
 
-async function appendRows(job) {
-  const { token, repo } = LS.get('conn', {});
-  const url = `https://api.github.com/repos/${repo}/contents/${job.path}`;
-  const headers = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json' };
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const g = await fetch(url + '?ref=main', { headers, cache: 'no-store' });
-    let text = '', sha;
-    if (g.status === 404) text = job.header + '\n';
-    else if (g.status === 401 || g.status === 403) throw new Error('auth');
-    else if (!g.ok) throw new Error('GitHub ' + g.status);
-    else { const j = await g.json(); sha = j.sha; text = b64d(j.content); }
-    if (text && !text.endsWith('\n')) text += '\n';
-    text += job.lines.join('\n') + '\n';
-    const p = await fetch(url, { method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: job.message, content: b64e(text), sha, branch: 'main' }) });
-    if (p.ok) { try { localStorage.removeItem('stats.cache:' + job.path); } catch { /* ignore */ } return; }
-    if (p.status === 401 || p.status === 403) throw new Error(p.status === 403 ? 'token can’t write: needs Contents: Read and write' : 'auth');
-    if (p.status !== 409 && p.status !== 422) throw new Error('GitHub ' + p.status);
-    // 409/422 = the file changed in between (e.g. a sync from the computer): read again and retry
-  }
-  throw new Error('file kept changing, try again');
-}
-
-let flushing = false;
-async function flush() {
-  if (flushing) return;
-  flushing = true;
-  let wrote = false, err = null;
-  try {
-    for (let q = LS.get('queue', []); q.length; q = LS.get('queue', [])) {
-      try { await appendRows(q[0]); } catch (e) { err = e; break; }
-      LS.set('queue', LS.get('queue', []).slice(1));
-      wrote = true;
+function applyOps(text, header, ops) {
+  if (!text) text = header + '\n';
+  let lines = text.replace(/\n+$/, '').split('\n');
+  for (const op of ops) {
+    if (op.op === 'add') lines.push(...op.rows.map(line));
+    else {
+      // gym undo removes the whole workout (all rows of that date+time); everything else one row, newest first
+      const hit = (l) => sameRow(csv(lines[0] + '\n' + l)[0] || {}, op.match);
+      if (op.kind === 'gym') lines = [lines[0], ...lines.slice(1).filter((l) => !hit(l))];
+      else for (let i = lines.length - 1; i > 0; i--) if (hit(lines[i])) { lines.splice(i, 1); break; }
     }
-  } finally { flushing = false; }
-  if (err) toast(`Saved on the phone, not synced yet (${err.message === 'auth' ? 'token rejected' : err instanceof TypeError ? 'offline' : err.message}). Retries automatically.`);
-  window.renderToday?.();
-  if (wrote && !err) refresh();
+  }
+  return lines.join('\n') + '\n';
 }
 
-function save(kind, rows, message) {
-  const q = LS.get('queue', []);
-  q.push({ path: F(kind), header: HEADERS[kind], lines: rows.map(line), message: 'app: ' + message });
-  LS.set('queue', q);
-  toast('Saved ✓ ' + message);
-  flush();
+async function commitStaged(items) {
+  const { token, repo } = LS.get('conn', {});
+  const api = `https://api.github.com/repos/${repo}`;
+  const H = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json' };
+  const call = async (path, opts = {}) => {
+    const r = await fetch(api + path, { cache: 'no-store', ...opts, headers: { ...H, ...(opts.body ? { 'Content-Type': 'application/json' } : {}) } });
+    if (r.status === 401) throw new Error('auth');
+    if (r.status === 403) throw new Error('token can’t write: needs Contents: Read and write');
+    return r;
+  };
+  const byPath = {};
+  for (const it of items) (byPath[F(it.kind)] ||= { header: HEADERS[it.kind], ops: [] }).ops.push(it);
+  const message = 'app: ' + items.map((i) => (i.op === 'del' ? 'undo ' : '') + i.label).join(' · ');
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ref = await call('/git/ref/heads/main'); if (!ref.ok) throw new Error('GitHub ' + ref.status);
+    const parent = (await ref.json()).object.sha;
+    const base = (await (await call('/git/commits/' + parent)).json()).tree.sha;
+    const tree = [];
+    for (const [path, { header, ops }] of Object.entries(byPath)) {
+      const g = await call(`/contents/${path}?ref=${parent}`);
+      if (!g.ok && g.status !== 404) throw new Error('GitHub ' + g.status);
+      const text = g.ok ? b64d((await g.json()).content) : '';
+      tree.push({ path, mode: '100644', type: 'blob', content: applyOps(text, header, ops) });
+    }
+    const t = await call('/git/trees', { method: 'POST', body: JSON.stringify({ base_tree: base, tree }) });
+    if (!t.ok) throw new Error('GitHub ' + t.status);
+    const c = await call('/git/commits', { method: 'POST', body: JSON.stringify({ message, tree: (await t.json()).sha, parents: [parent] }) });
+    if (!c.ok) throw new Error('GitHub ' + c.status);
+    const u = await call('/git/refs/heads/main', { method: 'PATCH', body: JSON.stringify({ sha: (await c.json()).sha, force: false }) });
+    if (u.ok) { Object.keys(byPath).forEach((p) => LS.remove('cache:' + p)); return; }
+    if (u.status !== 422 && u.status !== 409) throw new Error('GitHub ' + u.status);
+    // main moved in between (a sync from the computer): build again on top of it
+  }
+  throw new Error('the repo kept changing, try again');
 }
 
-window.addEventListener('online', flush);
-document.addEventListener('visibilitychange', () => { if (!document.hidden && LS.get('queue', []).length) flush(); });
+let saving = false;
+async function saveAll() {
+  const items = staged();
+  if (saving || !items.length) return;
+  saving = true; renderToday();
+  try {
+    await commitStaged(items);
+    const done = new Set(items.map((i) => i.id));
+    LS.set('staged', staged().filter((x) => !done.has(x.id)));
+    toast(`Saved ✓ ${items.length} change${items.length === 1 ? '' : 's'}`);
+    saving = false;
+    refresh();
+  } catch (e) {
+    saving = false;
+    toast(`Not saved (${e.message === 'auth' ? 'token rejected' : e instanceof TypeError ? 'offline' : e.message}). Still on the phone, try Save again.`);
+  }
+  renderToday();
+}
 
 // ---------- small UI helpers ----------
 const sheet = () => $('#sheet');
@@ -95,22 +124,23 @@ function wireSteppers(root) {
   }));
 }
 const nowKey = () => dayKey(Date.now());
-function markToday(field, value = true) { if (!DATA) return; (DATA.days[nowKey()] ||= { kcal: 0, protein: 0, meals: 0 })[field] = value; LS.set('last', DATA); render(); }
 
 // ---------- today bar ----------
+function todayView() {
+  const t = { ...(DATA.days[nowKey()] || {}) };
+  for (const it of staged()) if (it.date === nowKey()) Object.assign(t, it.marks || {});
+  return t;
+}
 window.renderToday = function () {
   const el = $('#today');
   if (!el || !DATA || !CFG.files) return;
-  const t = DATA.days[nowKey()] || {};
-  const pending = LS.get('queue', []).length;
-  const wo = LS.get('workout', null);
-  const goal = CFG.proteinGoal;
+  const t = todayView(), items = staged(), wo = LS.get('workout', null), goal = CFG.proteinGoal;
   el.innerHTML = `
     <div class="chips">
       <span class="chip ${t.protein >= goal ? 'good' : ''}">🍽️ ${Math.round(t.protein || 0)}/${goal} g</span>
       <span class="chip ${t.floss ? 'good' : 'bad'}">🦷 ${t.floss ? '✓' : '✗'}</span>
       <span class="chip ${t.gym || t.run ? 'good' : ''}">${t.gym ? '🏋️ ✓' : '🏋️ –'} ${t.run ? '🏃 ✓' : '🏃 –'}</span>
-      ${pending ? `<button class="chip warn" id="retry">⏳ ${pending} to sync</button>` : ''}
+      <button class="chip" id="entries">↺ Undo…</button>
     </div>
     <div class="quick">
       <button id="q-floss" ${t.floss ? 'disabled' : ''}>🦷<span>${t.floss ? 'Flossed' : 'Floss'}</span></button>
@@ -119,15 +149,47 @@ window.renderToday = function () {
       <button id="q-weight">⚖️<span>Weight</span></button>
       <button id="q-spend">💸<span>Spend</span></button>
       <button id="q-night">😴<span>Goodnight</span></button>
-    </div>`;
-  $('#retry')?.addEventListener('click', flush);
-  $('#q-floss').addEventListener('click', () => { save('habits', [[nowKey(), clock(Date.now()), 'floss', '1']], 'floss'); markToday('floss'); });
+    </div>
+    ${items.length ? `<div class="unsaved">
+      <div class="unsaved-head"><b>Not saved yet</b><span class="badge">${items.length}</span></div>
+      <ul>${items.map((i) => `<li><span>${i.op === 'del' ? '🗑️ undo ' : ''}${esc(i.label)}</span><button class="x" data-unstage="${i.id}" aria-label="Remove">✕</button></li>`).join('')}</ul>
+      <button class="primary" id="save-all" ${saving ? 'disabled' : ''}>${saving ? 'Saving…' : `Save ${items.length} change${items.length === 1 ? '' : 's'}`}</button>
+    </div>` : ''}`;
+  el.querySelectorAll('[data-unstage]').forEach((b) => b.addEventListener('click', () => unstage(Number(b.dataset.unstage))));
+  $('#save-all')?.addEventListener('click', saveAll);
+  $('#entries').addEventListener('click', openEntries);
+  $('#q-floss').addEventListener('click', () => stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), 'floss', '1']], label: 'floss', marks: { floss: true } }));
   $('#q-gym').addEventListener('click', openGym);
   $('#q-run').addEventListener('click', openRun);
   $('#q-weight').addEventListener('click', openWeight);
   $('#q-spend').addEventListener('click', openSpend);
   $('#q-night').addEventListener('click', openNight);
 };
+
+// ---------- undo saved entries (today + yesterday) ----------
+function openEntries() {
+  const days = [nowKey(), addDays(nowKey(), -1)];
+  const pick = (rows) => (rows || []).filter((r) => days.includes(r.date));
+  const list = [
+    ...pick(DATA.habits).map((r) => ({ kind: 'habits', match: r, label: r.habit === 'asleep' ? `goodnight ${r.value}` : r.habit, marks: r.habit === 'floss' ? { floss: false } : {} })),
+    ...pick(DATA.weightRows).map((r) => ({ kind: 'weight', match: r, label: `weight ${r.kg} kg` })),
+    ...pick(DATA.runs).map((r) => ({ kind: 'runs', match: r, label: `run ${r.km} km`, marks: { run: false } })),
+    ...pick(DATA.spendLog).map((r) => ({ kind: 'spend', match: r, label: `spend €${r.eur} ${r.what}` })),
+    ...Object.values(Object.groupBy ? Object.groupBy(pick(DATA.gym), (r) => r.date + ' ' + r.time) : pick(DATA.gym).reduce((m, r) => ((m[r.date + ' ' + r.time] ||= []).push(r), m), {}))
+      .map((rows) => ({ kind: 'gym', match: { date: rows[0].date, time: rows[0].time }, label: `gym ${rows[0].workout} · ${rows.length} sets`, marks: { gym: false } })),
+  ].map((e) => ({ ...e, day: e.match.date, time: e.match.time || '' })).sort((a, b) => (b.day + b.time).localeCompare(a.day + a.time));
+  const queued = staged().filter((i) => i.op === 'del').map((i) => JSON.stringify(i.match));
+  openSheet('Undo a saved entry', list.length ? `
+    <p class="sub">Today and yesterday. Undo lands in "Not saved yet" first, Save makes it real.</p>
+    <ul class="list entries">${list.map((e, i) => `<li><span>${e.day === nowKey() ? 'Today' : 'Yesterday'} ${esc(e.time)} · ${esc(e.label)}</span>${queued.includes(JSON.stringify(e.match)) ? '<span>queued</span>' : `<button data-undo="${i}" aria-label="Undo">🗑️</button>`}</li>`).join('')}</ul>`
+    : '<p class="sub">Nothing saved from the app today or yesterday.</p>', (r) => {
+    r.querySelectorAll('[data-undo]').forEach((b) => b.addEventListener('click', () => {
+      const e = list[Number(b.dataset.undo)];
+      stage({ kind: e.kind, op: 'del', match: e.match, label: e.label, marks: e.day === nowKey() ? e.marks : {} });
+      closeSheet();
+    }));
+  });
+}
 
 // ---------- weight ----------
 function openWeight() {
@@ -142,9 +204,8 @@ function openWeight() {
     r.querySelector('#w-save').addEventListener('click', () => {
       const v = kg(r.querySelector('#w-kg').value);
       const note = [r.querySelector('#w-morning').checked ? 'morning' : 'not morning', r.querySelector('#w-note').value.trim()].filter(Boolean).join(', ');
-      save('weight', [[nowKey(), clock(Date.now()), v, note]], `weight ${v} kg`);
-      DATA.weights.push({ date: nowKey(), kg: Number(v), note }); LS.set('last', DATA);
-      closeSheet(); render();
+      stage({ kind: 'weight', op: 'add', rows: [[nowKey(), clock(Date.now()), v, note]], label: `weight ${v} kg` });
+      closeSheet();
     });
   });
 }
@@ -169,9 +230,9 @@ function openRun() {
       const m = mins(), k = kg(r.querySelector('#r-km').value);
       if (!m) { toast('Add the time first'); return; }
       const w = r.querySelector('#r-with')?.checked ? partner : '';
-      save('runs', [[nowKey(), clock(Date.now()), k, (Math.round(m * 100) / 100), r.querySelector('#r-feel').value, w, r.querySelector('#r-note').value.trim()]],
-        `run ${k} km ${r.querySelector('#r-time').value.trim()}`);
-      markToday('run'); closeSheet();
+      stage({ kind: 'runs', op: 'add', rows: [[nowKey(), clock(Date.now()), k, (Math.round(m * 100) / 100), r.querySelector('#r-feel').value, w, r.querySelector('#r-note').value.trim()]],
+        label: `run ${k} km ${r.querySelector('#r-time').value.trim()}`, marks: { run: true } });
+      closeSheet();
     });
   });
 }
@@ -189,24 +250,23 @@ function openSpend() {
       const e = Number(r.querySelector('#s-eur').value), what = r.querySelector('#s-what').value.trim();
       if (!e || !what) { toast('Amount and what, please'); return; }
       const d = r.querySelector('#s-date').value || nowKey(), cat = r.querySelector('#s-cat').value;
-      save('spend', [[d, clock(Date.now()), e.toFixed(2), what, cat]], `spend €${e.toFixed(2)} ${what}`);
-      DATA.spends.push({ date: d, what, cat, eur: e }); LS.set('last', DATA);
-      closeSheet(); render();
+      stage({ kind: 'spend', op: 'add', rows: [[d, clock(Date.now()), e.toFixed(2), what, cat]], label: `spend €${e.toFixed(2)} ${what}` });
+      closeSheet();
     });
   });
 }
 
 // ---------- goodnight ----------
 function openNight() {
-  const at = clock(Date.now() + 15 * 60e3), flossed = DATA?.days[nowKey()]?.floss;
+  const at = clock(Date.now() + 15 * 60e3), flossed = todayView().floss;
   openSheet('Goodnight 😴', `
     <p>Logs <b>asleep ~${at}</b> (now + 15 min).</p>
     ${flossed ? '' : '<p class="bad">No floss today yet 😤</p><button id="n-floss">🦷 Flossed, log it too</button>'}
     <button class="primary" id="n-save">Log goodnight</button>`, (r) => {
-    r.querySelector('#n-floss')?.addEventListener('click', (e) => { save('habits', [[nowKey(), clock(Date.now()), 'floss', '1']], 'floss'); markToday('floss'); e.target.remove(); r.querySelector('.bad')?.remove(); });
+    r.querySelector('#n-floss')?.addEventListener('click', (e) => { stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), 'floss', '1']], label: 'floss', marks: { floss: true } }); e.target.remove(); r.querySelector('.bad')?.remove(); });
     r.querySelector('#n-save').addEventListener('click', () => {
-      save('habits', [[nowKey(), clock(Date.now()), 'asleep', at]], `goodnight ${at}`);
-      markToday('asleep', at); closeSheet();
+      stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), 'asleep', at]], label: `goodnight ${at}` });
+      closeSheet();
     });
   });
 }
@@ -287,9 +347,9 @@ function openGym() {
       for (const name of wo.list) (wo.sets[name] || []).forEach((s, j) => rows.push([date, time, wo.type, name, j + 1, s.reps, kg(s.kg), '']));
       if (!rows.length) { toast('No sets logged yet'); return; }
       const ex = new Set(rows.map((x) => x[3])).size;
-      save('gym', rows, `gym ${wo.type} · ${ex} exercise${ex === 1 ? '' : 's'}, ${rows.length} sets`);
-      DATA.gym.push(...rows.map((x) => ({ date: x[0], time: x[1], workout: x[2], exercise: x[3], set: String(x[4]), reps: String(x[5]), kg: x[6] })));
-      LS.remove('workout'); markToday('gym'); closeSheet();
+      LS.remove('workout');
+      stage({ kind: 'gym', op: 'add', rows, label: `gym ${wo.type} · ${ex} exercise${ex === 1 ? '' : 's'}, ${rows.length} sets`, marks: { gym: true } });
+      closeSheet();
     });
     const disc = r.querySelector('#g-discard');
     disc.addEventListener('click', () => {
