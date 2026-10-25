@@ -149,7 +149,8 @@ async function load(range) {
   let lastImport = '';
   for (const r of csv(tx)) { lastImport = r.date > lastImport ? r.date : lastImport; const e = Number(r.eur); if (e < 0 && !SKIP.test(r.category)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: -e }); }
   for (const c of mdTable(money)) if (/^\d{4}-\d{2}-\d{2}$/.test(c[0]) && c.length >= 5 && c[0] > lastImport) {
-    const e = Number(c[4].replace(/[^\d.\-]/g, '')); if (e > 0) spends.push({ date: c[0], what: strip(c[1]), cat: strip(c[3]), eur: e });
+    const e = Number(c[4].replace(/[^\d.]/g, '')) * (/^\s*[+−-]/.test(c[4]) ? -1 : 1); // "+€" = money back
+    if (e) spends.push({ date: c[0], what: strip(c[1]), cat: strip(c[3]), eur: e });
   }
 
   return { today, days, weights, deadlines, spends, cfg: CFG, fetched: Date.now() };
@@ -247,12 +248,12 @@ const CARDS = [
     const spent = sum(everyday.map((s) => s.eur)), oneoff = sum(rows.filter((s) => /^One-time/i.test(s.cat)).map((s) => s.eur));
     const dom = Number(x.today.slice(8)), dim = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate();
     const pace = (spent / dom) * dim;
-    const last = x.spends.reduce((m, s) => (s.date > m ? s.date : m), '');
+    const last = x.spends.reduce((m, s) => (s.date > m && s.date <= x.today ? s.date : m), '');
     const gap = last ? daysBetween(last, x.today) : null;
     const cats = {}; everyday.forEach((s) => (cats[s.cat] = (cats[s.cat] || 0) + s.eur));
     const top = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 4);
     return { big: `<span class="${pace <= BUDGET() ? 'good' : 'bad'}">€${Math.round(spent)}</span>`, unit: `of €${BUDGET()}`,
-      sub: `on pace for €${Math.round(pace)}` + (oneoff ? ` · one-offs €${Math.round(oneoff)}` : '') +
+      sub: `on pace for €${Math.round(pace)}` + (oneoff ? ` · one-offs ${oneoff < 0 ? '−' : ''}€${Math.abs(Math.round(oneoff))}` : '') +
         (gap != null ? ` · <span class="${gap >= 2 ? 'warn' : ''}">last logged ${gap === 0 ? 'today' : gap + ' d ago'}</span>` : ''),
       html: `<ul class="list">${top.map(([c, e]) => `<li><span>${esc(c)}</span><span>€${e.toFixed(2)}</span></li>`).join('')}</ul>` };
   } },
