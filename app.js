@@ -37,6 +37,14 @@ async function gh(path, json = false) {
   return body;
 }
 
+async function ghRaw(path) {
+  const { token, repo } = LS.get('conn', {});
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${path}?ref=main`, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
+  if (res.status === 401 || res.status === 403) throw new Error('auth');
+  if (!res.ok) throw new Error('GitHub ' + res.status);
+  return res.text();
+}
+
 // ---------- parsers ----------
 function csv(text) {
   if (!text) return [];
@@ -104,6 +112,10 @@ function dayLog(text) {
       if (u.length) r.asleep = u[u.length - 1][1].padStart(5, '0');
     }
   }
+  // streak (same rule as the daily update): "Streak: earned|frozen|not earned" in ## Study; no such line → earned if ## Study isn't empty
+  const study = (text.split('## Study')[1] || '').split('\n## ')[0];
+  const marks = [...study.matchAll(/Streak:\W*(earned|frozen|not earned)/gi)].map((m) => m[1].toLowerCase());
+  r.streak = marks.includes('earned') ? 'earned' : marks.includes('frozen') ? 'frozen' : marks.length ? 'no' : study.trim() ? 'earned' : 'no';
   return r;
 }
 
@@ -124,26 +136,31 @@ async function load(range) {
   const today = dayKey(Date.now());
   const listing = JSON.parse(await gh(F('logDir'), true) || '[]');
   const names = listing.map((f) => f.name);
-  const logNames = names.filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n));
-  const from = range === 'all' ? (logNames[0] || today).slice(0, 10) : addDays(today, -(2 * range - 1));
-  const wantLogs = logNames.filter((n) => n.slice(0, 10) >= from);
+  // every day log is needed for the streak; only files whose blob sha changed get downloaded, the parsed result is cached
+  const logFiles = listing.filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f.name));
   const timeNames = names.filter((n) => /^time-.*\.csv$/.test(n) && F('logDir') + '/' + n !== F('timeTags'));
 
   const [ratings, food, tags, deadlineText, money, tx, weightText, gymText, runText, habitText, spendText, ...rest] = await Promise.all([
     gh(F('ratings')), gh(F('food')), gh(F('timeTags')),
     gh(F('deadlines')), gh(F('money')), gh(F('transactions')),
     gh(F('weight')), gh(F('gym')), gh(F('runs')), gh(F('habits')), gh(F('spend')),
-    ...timeNames.map((n) => gh(F('logDir') + '/' + n)), ...wantLogs.map((n) => gh(F('logDir') + '/' + n)),
+    ...timeNames.map((n) => gh(F('logDir') + '/' + n)),
   ]);
-  const timeFiles = rest.slice(0, timeNames.length);
-  const logs = rest.slice(timeNames.length);
+  const timeFiles = rest;
+  const parsedLogs = await Promise.all(logFiles.map(async (f) => {
+    const c = LS.get('log:' + f.name, null);
+    if (c && c.sha === f.sha) return c.r;
+    const r = dayLog(await ghRaw(F('logDir') + '/' + f.name));
+    LS.set('log:' + f.name, { sha: f.sha, r });
+    return r;
+  }));
 
   const days = {};
   const day = (k) => (days[k] ||= { kcal: 0, protein: 0, meals: 0 });
   for (const r of csv(ratings)) Object.assign(day(r.date), { score: Number(r.score), final: r.final === 'final', why: r.why });
   for (const r of csv(food)) { const d = day(r.date); d.kcal += Number(r.kcal) || 0; d.protein += Number(r.protein_g) || 0; d.meals++; }
   for (const [k, v] of Object.entries(studyTime(timeFiles, tags))) Object.assign(day(k), v);
-  wantLogs.forEach((n, i) => { if (logs[i]) Object.assign(day(n.slice(0, 10)), dayLog(logs[i]), { logged: true }); });
+  logFiles.forEach((f, i) => Object.assign(day(f.name.slice(0, 10)), parsedLogs[i], { logged: true }));
 
   // app logs (CSV) count the same as the day logs
   const gym = csv(gymText), runs = csv(runText);
@@ -194,6 +211,30 @@ function bars(values, { max, min = 0, ref, cls, hollow } = {}) {
   return s + '</svg>';
 }
 
+// ---------- streak ----------
+// earned days count, frozen days keep the streak alive without adding to it, anything else breaks it; today joins once earned
+const stOf = (days, k) => days[k]?.streak || 'no';
+function streakInfo(days, today) {
+  let cur = 0;
+  for (let k = addDays(today, -1); stOf(days, k) !== 'no'; k = addDays(k, -1)) if (stOf(days, k) === 'earned') cur++;
+  if (stOf(days, today) === 'earned') cur++;
+  const first = Object.keys(days).filter((k) => days[k].logged).sort()[0] || today;
+  let best = 0, run = 0;
+  for (const k of span(first, today)) {
+    const st = stOf(days, k);
+    if (st === 'earned') best = Math.max(best, ++run);
+    else if (st === 'no' && k !== today) run = 0;
+  }
+  // golden week = Mon–Sun all earned (frozen doesn't count)
+  const mon = (k) => addDays(k, -((new Date(k + 'T12:00:00Z').getUTCDay() + 6) % 7));
+  const golden = (ks) => ks.every((k) => k <= today && stOf(days, k) === 'earned');
+  let weeks = 0;
+  for (let m = mon(first); addDays(m, 6) <= today; m = addDays(m, 7)) if (golden(span(m, addDays(m, 6)))) weeks++;
+  return { cur, best, weeks, first, mon, golden, today: stOf(days, today) === 'earned' };
+}
+window.streakInfo = streakInfo;
+let calMonth = null; // month shown in the streak calendar (YYYY-MM)
+
 // ---------- cards ----------
 const avg = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null);
 const sum = (a) => a.reduce((s, v) => s + v, 0);
@@ -201,6 +242,46 @@ const sign = (v, d = 1) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 const CARDS = [
+  { id: 'streak', title: 'Study streak', render(x) {
+    const s = streakInfo(x.days, x.today);
+    const month = (calMonth ||= x.today.slice(0, 7));
+    const m1 = month + '-01', dim = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate();
+    const mEnd = month + '-' + String(dim).padStart(2, '0');
+    const goldMonth = mEnd <= x.today && s.golden(span(m1, mEnd));
+    const live = (k) => stOf(x.days, k) !== 'no';
+    let rows = '';
+    for (let w = s.mon(m1); w <= mEnd; w = addDays(w, 7)) {
+      const ks = span(w, addDays(w, 6));
+      rows += `<div class="cal-row${s.golden(ks) ? ' gold' : ''}">` + ks.map((k, i) => {
+        if (k.slice(0, 7) !== month) return '<span class="cal-day out"></span>';
+        const st = stOf(x.days, k);
+        const cls = k > x.today ? 'future' : k < s.first ? 'pre' : st === 'earned' ? 'on' : st === 'frozen' ? 'frz' : k === x.today ? 'open' : 'off';
+        const band = (st !== 'no' && k <= x.today) ? (i > 0 && live(ks[i - 1]) && ks[i - 1].slice(0, 7) === month ? ' jl' : '') + (i < 6 && live(ks[i + 1]) && ks[i + 1] <= x.today && ks[i + 1].slice(0, 7) === month ? ' jr' : '') : '';
+        return `<button class="cal-day ${cls}${band}${k === x.today ? ' now' : ''}" data-k="${k}">${Number(k.slice(8))}</button>`;
+      }).join('') + '</div>';
+    }
+    const title = new Date(m1 + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    const label = { earned: '🔥 earned', frozen: '🧊 frozen', no: 'not earned' };
+    return { big: `<span class="${s.cur ? 'fire' : ''}">🔥 ${s.cur}</span>`, unit: `day${s.cur === 1 ? '' : 's'}`,
+      sub: `best ${s.best} · golden weeks ${s.weeks}` + (s.today ? ' · <span class="good">today ✓</span>' : ' · today still open'),
+      html: `<div class="cal">
+        <div class="cal-head"><button class="cal-nav" data-nav="-1" aria-label="Previous month" ${month <= s.first.slice(0, 7) ? 'disabled' : ''}>‹</button>
+          <b class="${goldMonth ? 'gold-t' : ''}">${goldMonth ? '👑 ' : ''}${title}</b>
+          <button class="cal-nav" data-nav="1" aria-label="Next month" ${month >= x.today.slice(0, 7) ? 'disabled' : ''}>›</button></div>
+        <div class="cal-row dow">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => `<span>${d}</span>`).join('')}</div>${rows}</div><div class="detail"></div>`,
+      wire(el) {
+        const det = el.querySelector('.detail');
+        det.textContent = `${short(x.today)}: ${label[stOf(x.days, x.today)]}`;
+        el.querySelectorAll('.cal-day[data-k]').forEach((b) => b.addEventListener('click', () => {
+          const k = b.dataset.k;
+          det.textContent = k > x.today ? `${short(k)}: still ahead` : k < s.first ? `${short(k)}: before tracking` : `${short(k)}: ${label[stOf(x.days, k)]}`;
+        }));
+        el.querySelectorAll('.cal-nav').forEach((b) => b.addEventListener('click', () => {
+          const d = new Date(month + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + Number(b.dataset.nav));
+          calMonth = d.toISOString().slice(0, 7); render();
+        }));
+      } };
+  } },
   { id: 'score', title: 'Day score', render(x) {
     const s = x.dates.map((k) => x.days[k]?.score ?? null);
     const v = s.filter((n) => n != null), p = x.prev.map((k) => x.days[k]?.score).filter((n) => n != null);
@@ -324,6 +405,7 @@ function render() {
       det.textContent = r.tap(lastI);
       el.querySelector('svg')?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = r.tap(Number(i)); });
     }
+    r.wire?.(el);
     root.appendChild(el);
   }
 }

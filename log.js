@@ -135,8 +135,10 @@ window.renderToday = function () {
   const el = $('#today');
   if (!el || !DATA || !CFG.files) return;
   const t = todayView(), items = staged(), wo = LS.get('workout', null), goal = CFG.proteinGoal;
+  const st = streakInfo(DATA.days, nowKey());
   el.innerHTML = `
     <div class="chips">
+      <span class="chip ${st.today ? 'fire' : ''}">🔥 ${st.cur}${st.today ? ' ✓' : ''}</span>
       <span class="chip ${t.protein >= goal ? 'good' : ''}">🍽️ ${Math.round(t.protein || 0)}/${goal} g</span>
       <span class="chip ${t.floss ? 'good' : 'bad'}">🦷 ${t.floss ? '✓' : '✗'}</span>
       <span class="chip ${t.gym || t.run ? 'good' : ''}">${t.gym ? '🏋️ ✓' : '🏋️ –'} ${t.run ? '🏃 ✓' : '🏃 –'}</span>

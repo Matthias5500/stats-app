@@ -94,3 +94,25 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .unsaved li, .entries li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .unsaved .x { background: transparent; border: 0; color: var(--muted); padding: 2px 8px; }
 .entries button { padding: 4px 10px; }
+
+/* streak calendar (Duolingo-ish): earned = orange, joined by a band; golden week row = gold */
+:root { --fire: #ff9f43; --gold: #f5c542; }
+@media (prefers-color-scheme: light) { :root { --fire: #e07b10; --gold: #b8860b; } }
+.fire { color: var(--fire); } .chip.fire { color: var(--fire); border-color: var(--fire); }
+.cal { display: grid; gap: 4px; margin-top: 8px; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; }
+.cal-head b { font-size: 15px; } .gold-t { color: var(--gold); }
+.cal-nav { padding: 4px 12px; } .cal-nav:disabled { opacity: .3; }
+.cal-row { display: grid; grid-template-columns: repeat(7, 1fr); border-radius: 999px; padding: 2px 0; }
+.cal-row.dow span { text-align: center; font-size: 11px; color: var(--muted); }
+.cal-row.gold { background: color-mix(in srgb, var(--gold) 22%, transparent); box-shadow: 0 0 0 1px var(--gold) inset; }
+.cal-day { aspect-ratio: 1; max-height: 42px; border: 0; border-radius: 999px; padding: 0; margin: 0 auto; width: 100%; max-width: 42px; background: transparent; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--muted); position: relative; }
+.cal-day.out { visibility: hidden; }
+.cal-day.on { background: var(--fire); color: #1a1004; font-weight: 700; }
+.cal-row.gold .cal-day.on { background: var(--gold); }
+.cal-day.frz { background: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--fg); }
+.cal-day.off { color: var(--fg); opacity: .55; }
+.cal-day.future, .cal-day.pre { opacity: .3; }
+.cal-day.now { box-shadow: 0 0 0 2px var(--fire); }
+.cal-day.jl { border-top-left-radius: 0; border-bottom-left-radius: 0; max-width: none; }
+.cal-day.jr { border-top-right-radius: 0; border-bottom-right-radius: 0; max-width: none; }
