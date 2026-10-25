@@ -1,9 +1,11 @@
-// Stats: reads a private repo straight from GitHub (read-only token on this device) and parses it here.
+// Stats: reads a private repo straight from GitHub (token stays on this device) and parses it here.
+// log.js adds the quick-logs that write back to the repo.
 // Everything personal (file paths, goals, time zone) lives in stats.json inside that repo, not in this code.
 
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('stats.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('stats.' + k, JSON.stringify(v)); } catch { /* full or blocked: skip cache */ } },
+  remove(k) { try { localStorage.removeItem('stats.' + k); } catch { /* ignore */ } },
 };
 
 const H = 3600e3;
@@ -127,9 +129,10 @@ async function load(range) {
   const wantLogs = logNames.filter((n) => n.slice(0, 10) >= from);
   const timeNames = names.filter((n) => /^time-.*\.csv$/.test(n) && F('logDir') + '/' + n !== F('timeTags'));
 
-  const [ratings, food, tags, body, deadlineText, money, tx, ...rest] = await Promise.all([
-    gh(F('ratings')), gh(F('food')), gh(F('timeTags')), gh(F('body')),
+  const [ratings, food, tags, deadlineText, money, tx, weightText, gymText, runText, habitText, spendText, ...rest] = await Promise.all([
+    gh(F('ratings')), gh(F('food')), gh(F('timeTags')),
     gh(F('deadlines')), gh(F('money')), gh(F('transactions')),
+    gh(F('weight')), gh(F('gym')), gh(F('runs')), gh(F('habits')), gh(F('spend')),
     ...timeNames.map((n) => gh(F('logDir') + '/' + n)), ...wantLogs.map((n) => gh(F('logDir') + '/' + n)),
   ]);
   const timeFiles = rest.slice(0, timeNames.length);
@@ -142,7 +145,16 @@ async function load(range) {
   for (const [k, v] of Object.entries(studyTime(timeFiles, tags))) Object.assign(day(k), v);
   wantLogs.forEach((n, i) => { if (logs[i]) Object.assign(day(n.slice(0, 10)), dayLog(logs[i]), { logged: true }); });
 
-  const weights = mdTable(body, CFG.weightHeading).filter((c) => /^\d{4}-/.test(c[0])).map((c) => ({ date: c[0], kg: Number(c[1]), note: c[2] || '' }));
+  // app logs (CSV) count the same as the day logs
+  const gym = csv(gymText), runs = csv(runText);
+  for (const r of gym) day(r.date).gym = true;
+  for (const r of runs) day(r.date).run = true;
+  for (const r of csv(habitText)) {
+    if (r.habit === 'floss') day(r.date).floss = true;
+    if (r.habit === 'asleep' && r.value) day(r.date).asleep = r.value;
+  }
+  const weights = csv(weightText).filter((r) => r.kg).map((r) => ({ date: r.date, kg: Number(r.kg), note: r.note || '' }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 
   const deadlines = mdTable(deadlineText).map((c) => ({ c, m: (c[0] || '').match(/(\d{4}-\d{2}-\d{2})/) }))
     .filter(({ c, m }) => m && c.length >= 5 && m[1] >= today && !/✅|\bdone\b/.test(c[c.length - 1]))
@@ -157,8 +169,9 @@ async function load(range) {
     const e = Number(c[4].replace(/[^\d.]/g, '')) * (/^\s*[+−-]/.test(c[4]) ? -1 : 1); // "+€" = money back
     if (e) spends.push({ date: c[0], what: strip(c[1]), cat: strip(c[3]), eur: e });
   }
+  for (const r of csv(spendText)) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
 
-  return { today, days, weights, deadlines, spends, cfg: CFG, fetched: Date.now() };
+  return { today, days, weights, deadlines, spends, gym, runs, cfg: CFG, fetched: Date.now() };
 }
 
 // ---------- tiny charts ----------
@@ -265,7 +278,7 @@ const CARDS = [
   { id: 'weight', title: 'Weight', render(x) {
     const w = x.weights; const last = w[w.length - 1];
     const inR = w.filter((r) => r.date >= x.dates[0]);
-    const byDay = Object.fromEntries(w.map((r) => [r.date, r.kg]));
+    const byDay = Object.fromEntries(w.map((r) => [r.date, r.kg])); // last weigh-in of a day wins
     const vals = x.dates.map((k) => byDay[k] ?? null), have = vals.filter((v) => v != null);
     return { big: last ? last.kg.toFixed(1) : '—', unit: 'kg',
       sub: last ? `${short(last.date)}` + (inR.length >= 2 ? ` · ${sign(inR[inR.length - 1].kg - inR[0].kg)} kg in range` : '') + ` · ${inR.length} weigh-in${inR.length === 1 ? '' : 's'}` : 'no weigh-ins yet',
@@ -287,6 +300,7 @@ const hidden = () => new Set(LS.get('hidden', []));
 
 function render() {
   if (!DATA) return;
+  window.renderToday?.();
   const first = Object.keys(DATA.days).sort()[0] || DATA.today;
   const from = range === 'all' ? first : addDays(DATA.today, -(range - 1));
   const dates = span(from, DATA.today);
@@ -318,6 +332,7 @@ async function refresh() {
   try {
     DATA = await load(range === 'all' ? 'all' : Math.max(range, 30));
     LS.set('last', DATA);
+    if (LS.get('queue', []).length) window.flush?.();
     $('#status').textContent = 'Updated ' + new Date(DATA.fetched).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   } catch (e) {
     $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : (e instanceof TypeError ? 'Offline or GitHub unreachable' : 'Couldn’t load') + ', showing the last data: ' + e.message;

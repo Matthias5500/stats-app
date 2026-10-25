@@ -22,11 +22,14 @@
   <button id="open-settings" class="icon-btn" aria-label="Settings">⚙</button>
 </header>
 <p id="status" class="status"></p>
+<section id="today" class="today" aria-label="Today"></section>
 <main id="cards" class="cards"></main>
+<section id="sheet" class="sheet" hidden></section>
+<div id="toast" class="toast" role="status" hidden></div>
 
 <section id="setup" class="sheet" hidden>
   <h2>Connect your repo</h2>
-  <p>Paste a GitHub fine-grained token with <b>Contents: read</b> on your data repo. It stays on this device only.</p>
+  <p>Paste a GitHub fine-grained token with <b>Contents: Read and write</b> on your data repo. It stays on this device only.</p>
   <label for="token">Token</label>
   <input id="token" type="password" autocomplete="off" placeholder="github_pat_…">
   <label for="repo">Repo</label>
@@ -43,5 +46,6 @@
   <button id="close-settings" class="primary">Done</button>
 </section>
 <script src="app.js"></script>
+<script src="log.js"></script>
 </body>
 </html>

@@ -50,3 +50,38 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .card-list label { flex: 1; display: flex; gap: 10px; align-items: center; color: var(--fg); font-size: 15px; }
 .card-list input { width: 20px; height: 20px; }
 .card-list button { padding: 4px 10px; }
+
+/* today bar + quick logs */
+.today { display: grid; gap: 10px; margin-bottom: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font-size: 13px; padding: 4px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.chip.good { color: var(--good); } .chip.bad { color: var(--bad); } .chip.warn { color: var(--warn); }
+.quick { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.quick button { display: grid; justify-items: center; gap: 2px; padding: 10px 2px; font-size: 22px; line-height: 1; }
+.quick button span { font-size: 11px; color: var(--muted); }
+.quick button:disabled { opacity: .45; }
+.quick button.live { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+@media (max-width: 360px) { .quick { grid-template-columns: repeat(3, 1fr); } }
+.sheet-in { display: grid; gap: 10px; align-content: start; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sheet select, .sheet input[type=date] { font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 100%; }
+.sheet input[type=range] { width: 100%; accent-color: var(--accent); }
+.check { display: flex; align-items: center; gap: 10px; color: var(--fg) !important; font-size: 15px !important; }
+.check input { width: 20px; height: 20px; }
+.stepper { display: grid; grid-template-columns: auto 44px 1fr 44px; align-items: center; gap: 6px; }
+.stepper .lbl { font-size: 13px; color: var(--muted); min-width: 34px; }
+.stepper button { padding: 8px 0; font-size: 18px; }
+.stepper input { text-align: center; font-size: 18px; font-variant-numeric: tabular-nums; padding: 8px 4px !important; }
+.pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.pick button { padding: 18px 0; font-size: 20px; font-weight: 600; }
+.ex { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; display: grid; gap: 6px; }
+.ex-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.sets { margin: 0; padding-left: 20px; display: grid; gap: 2px; font-variant-numeric: tabular-nums; }
+.sets .x { padding: 0 8px; margin-left: 6px; font-size: 12px; background: transparent; border: 0; color: var(--muted); }
+.set-row { display: grid; gap: 6px; }
+.primary.small { padding: 10px; }
+.add-ex { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.ghost { background: transparent; color: var(--muted); }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--fg); color: var(--bg); padding: 10px 14px; border-radius: 12px; font-size: 14px; z-index: 9; max-width: calc(100% - 32px); }
+.stepper input::-webkit-outer-spin-button, .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper input { -moz-appearance: textfield; }
