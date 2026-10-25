@@ -111,7 +111,12 @@ const fmtClock = (x) => `${String(Math.floor(x) % 24).padStart(2, '0')}:${String
 // ---------- load everything ----------
 async function load(range) {
   const cfgText = await gh('stats.json');
-  if (!cfgText) throw new Error('no stats.json in the repo');
+  if (!cfgText) {
+    // 404 also means "this token can't see the repo": tell those apart
+    const { token, repo } = LS.get('conn', {});
+    const r = await fetch(`https://api.github.com/repos/${repo}`, { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
+    throw new Error(r.ok ? `no stats.json in ${repo}` : `token can't see ${repo}: check the token's repository access + Contents: Read`);
+  }
   CFG = JSON.parse(cfgText);
   fmtKey = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' });
   const today = dayKey(Date.now());
@@ -315,7 +320,7 @@ async function refresh() {
     LS.set('last', DATA);
     $('#status').textContent = 'Updated ' + new Date(DATA.fetched).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   } catch (e) {
-    $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : 'Offline or GitHub unreachable, showing the last data. (' + e.message + ')';
+    $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : (e instanceof TypeError ? 'Offline or GitHub unreachable' : 'Couldn’t load') + ', showing the last data: ' + e.message;
   }
   render();
 }
