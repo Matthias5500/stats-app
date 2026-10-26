@@ -133,3 +133,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .upd-list li.focus span:first-child { color: var(--accent); font-weight: 600; }
 .upd-list .meta { color: var(--muted); font-size: 13px; text-align: right; }
 .focus { margin: 4px 0 0; font-size: 16px; font-weight: 600; color: var(--accent); }
+
+/* update tab on phones (2026-10-26): text wraps, meta goes under the text, no sideways scroll, bigger text */
+.card.upd { grid-template-columns: minmax(0, 1fr); }
+/* a meta-less item's only span is also :last-child, which .list made nowrap → the culprit */
+.upd-list li span, .upd-list li span:last-child { white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+.upd-list li:not(:has(span)) { display: block; overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .upd-list { font-size: 16px; gap: 10px; line-height: 1.35; }
+  .upd-list li { flex-direction: column; gap: 1px; }
+  .upd-list .meta { text-align: left; font-size: 14px; }
+  .update .sub { font-size: 14px; }
+  .headline { font-size: 19px; line-height: 1.3; }
+  .focus { font-size: 17px; line-height: 1.35; }
+}
