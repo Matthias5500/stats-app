@@ -128,10 +128,16 @@ const nowKey = () => dayKey(Date.now());
 
 // ---------- today bar ----------
 function todayView() {
-  const t = { ...(DATA.days[nowKey()] || {}) };
-  for (const it of staged()) if (it.date === nowKey()) Object.assign(t, it.marks || {});
+  const t = JSON.parse(JSON.stringify(DATA.days[nowKey()] || {}));
+  for (const it of staged()) {
+    if (it.date !== nowKey()) continue;
+    if (it.kind === 'habits' && it.op === 'add') it.rows.forEach(([date, time, habit, value]) => date === nowKey() && habitInto(t, { date, time, habit, value }));
+    else Object.assign(t, it.marks || {});
+  }
   return t;
 }
+// one habits.csv row, staged
+const habit = (h, value = '1', label = h) => stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), h, value]], label });
 window.renderToday = function () {
   const el = $('#today');
   if (!el || !DATA || !CFG.files) return;
@@ -141,19 +147,25 @@ window.renderToday = function () {
     <div class="chips">
       <span class="chip ${st.today ? 'fire' : ''}">🔥 ${st.cur}${st.today ? ' ✓' : ''}</span>
       <span class="chip ${t.protein >= goal ? 'good' : ''}">🍽️ ${Math.round(t.protein || 0)}/${goal} g</span>
-      <span class="chip ${t.floss ? 'good' : 'bad'}">🦷 ${t.floss ? '✓' : '✗'}</span>
+      <span class="chip ${mouthCount(t) === 3 ? 'good' : ''}">🪥 ${mouthCount(t)}/3</span>
+      <span class="chip ${t.showers ? 'good' : ''}">🚿 ${t.showers ? '✓' : '–'}</span>
+      ${t.caffeine ? `<span class="chip">☕ ${t.caffeine}</span>` : ''}
       <span class="chip ${t.gym || t.run ? 'good' : ''}">${t.gym ? '🏋️ ✓' : '🏋️ –'} ${t.run ? '🏃 ✓' : '🏃 –'}</span>
       ${F('piano') ? `<span class="chip ${t.piano ? 'good' : ''}">🎹 ${Math.round(t.piano || 0)} min</span>` : ''}
       <button class="chip" id="entries">↺ Undo…</button>
     </div>
     <div class="quick">
-      <button id="q-floss" ${t.floss ? 'disabled' : ''}>🦷<span>${t.floss ? 'Flossed' : 'Floss'}</span></button>
+      <button id="q-awake" ${t.awake ? 'disabled' : ''}>☀️<span>${t.awake ? 'Up ' + t.awake : 'Awake'}</span></button>
+      <button id="q-mouth" class="${mouthCount(t) === 3 ? 'done' : ''}">🪥<span>Mouth</span></button>
+      <button id="q-shower">🚿<span>Shower</span></button>
+      <button id="q-caf">☕<span>Caff</span></button>
       <button id="q-gym" class="${wo ? 'live' : ''}">🏋️<span>${wo ? 'Resume' : 'Gym'}</span></button>
       <button id="q-run">🏃<span>Run</span></button>
       ${F('piano') ? `<button id="q-piano" class="${pt ? 'live' : ''}">🎹<span>${pt ? 'Playing' : 'Piano'}</span></button>` : ''}
+      <button id="q-home">🏠<span>Home</span></button>
       <button id="q-weight">⚖️<span>Weight</span></button>
       <button id="q-spend">💸<span>Spend</span></button>
-      <button id="q-night">😴<span>Goodnight</span></button>
+      <button id="q-night">😴<span>Night</span></button>
     </div>
     ${items.length ? `<div class="unsaved">
       <div class="unsaved-head"><b>Not saved yet</b><span class="badge">${items.length}</span></div>
@@ -163,13 +175,17 @@ window.renderToday = function () {
   el.querySelectorAll('[data-unstage]').forEach((b) => b.addEventListener('click', () => unstage(Number(b.dataset.unstage))));
   $('#save-all')?.addEventListener('click', saveAll);
   $('#entries').addEventListener('click', openEntries);
-  $('#q-floss').addEventListener('click', () => stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), 'floss', '1']], label: 'floss', marks: { floss: true } }));
+  $('#q-awake').addEventListener('click', () => habit('awake', clock(Date.now()), `awake ${clock(Date.now())}`));
+  $('#q-mouth').addEventListener('click', openMouth);
+  $('#q-shower').addEventListener('click', () => habit('shower', '1', 'shower'));
+  $('#q-caf').addEventListener('click', () => habit('caffeine', '1', 'caffeine'));
+  $('#q-home').addEventListener('click', openHome);
   $('#q-gym').addEventListener('click', openGym);
   $('#q-run').addEventListener('click', openRun);
   $('#q-piano')?.addEventListener('click', openPiano);
   $('#q-weight').addEventListener('click', openWeight);
   $('#q-spend').addEventListener('click', openSpend);
-  $('#q-night').addEventListener('click', openNight);
+  $('#q-night').addEventListener('click', () => openNight());
 };
 
 // ---------- undo saved entries (today + yesterday) ----------
@@ -177,7 +193,7 @@ function openEntries() {
   const days = [nowKey(), addDays(nowKey(), -1)];
   const pick = (rows) => (rows || []).filter((r) => days.includes(r.date));
   const list = [
-    ...pick(DATA.habits).map((r) => ({ kind: 'habits', match: r, label: r.habit === 'asleep' ? `goodnight ${r.value}` : r.habit, marks: r.habit === 'floss' ? { floss: false } : {} })),
+    ...pick(DATA.habits).map((r) => ({ kind: 'habits', match: r, label: r.habit === 'asleep' ? `goodnight ${r.value}` : r.habit === 'awake' ? `awake ${r.value}` : /^(mood|energy)$/.test(r.habit) ? `${r.habit} ${r.value}/5` : (MOUTH[r.habit] || CHORES[r.habit] || r.habit), marks: r.habit === 'floss' ? { floss: false } : {} })),
     ...pick(DATA.weightRows).map((r) => ({ kind: 'weight', match: r, label: `weight ${r.kg} kg` })),
     ...pick(DATA.runs).map((r) => ({ kind: 'runs', match: r, label: `run ${r.km} km`, marks: { run: false } })),
     ...pick(DATA.spendLog).map((r) => ({ kind: 'spend', match: r, label: `spend €${r.eur} ${r.what}` })),
@@ -318,16 +334,50 @@ function openPiano() {
 }
 window.openPiano = openPiano;
 
-// ---------- goodnight ----------
-function openNight() {
-  const at = clock(Date.now() + 15 * 60e3), flossed = todayView().floss;
+// ---------- mouth hygiene + household ----------
+const noIcon = (l) => l.replace(/^\S+\s/, '');
+const MOUTH = { brush_am: '🪥 Brushed AM', brush_pm: '🪥 Brushed PM', floss: '🧵 Flossed', mouthwash: '💧 Mouthwash' };
+const MOUTH_KEY = { brush_am: 'brushAm', brush_pm: 'brushPm', floss: 'floss', mouthwash: 'mouthwash' };
+const mouthButtons = (t) => Object.entries(MOUTH).map(([h, label]) =>
+  `<button class="tick${t[MOUTH_KEY[h]] ? ' on' : ''}" data-h="${h}" ${t[MOUTH_KEY[h]] ? 'disabled' : ''}>${label}${t[MOUTH_KEY[h]] ? ' ✓' : ''}${h === 'mouthwash' ? ' <small>bonus</small>' : ''}</button>`).join('');
+function openMouth() {
+  const t = todayView();
+  openSheet('Mouth hygiene 🪥', `<p class="sub">Done = brush AM + brush PM + floss (${mouthCount(t)}/3 today)</p><div class="ticks">${mouthButtons(t)}</div>`, (r) => {
+    r.querySelectorAll('[data-h]').forEach((b) => b.addEventListener('click', () => { habit(b.dataset.h, '1', MOUTH[b.dataset.h]); openMouth(); }));
+  });
+}
+function openHome() {
+  const t = todayView(), last = {};
+  for (const r of DATA.habits || []) if (CHORES[r.habit] && (!last[r.habit] || r.date > last[r.habit])) last[r.habit] = r.date;
+  openSheet('Household 🏠', `<p class="sub">Tap what you just did.</p><div class="ticks">${Object.entries(CHORES).map(([h, label]) => {
+    const done = t.chores?.includes(h), g = last[h] ? daysBetween(last[h], nowKey()) : null;
+    return `<button class="tick${done ? ' on' : ''}" data-h="${h}" ${done ? 'disabled' : ''}>${label}${done ? ' ✓' : ` <small>${g == null ? 'never logged' : g === 0 ? 'today' : g + ' d ago'}</small>`}</button>`; }).join('')}</div>`, (r) => {
+    r.querySelectorAll('[data-h]').forEach((b) => b.addEventListener('click', () => { habit(b.dataset.h, '1', noIcon(CHORES[b.dataset.h]).toLowerCase()); openHome(); }));
+  });
+}
+
+// ---------- goodnight: mouth check (judged), mood + energy, asleep = now + 15 min ----------
+const scale = (id, label) => `<label>${label}</label><div class="scale" data-scale="${id}">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-v="${n}">${n}</button>`).join('')}</div>`;
+function openNight(picked = {}) {
+  const at = clock(Date.now() + 15 * 60e3), t = todayView(), n = mouthCount(t);
+  const missing = Object.keys(MOUTH).filter((h) => h !== 'mouthwash' && !t[MOUTH_KEY[h]]);
   openSheet('Goodnight 😴', `
     <p>Logs <b>asleep ~${at}</b> (now + 15 min).</p>
-    ${flossed ? '' : '<p class="bad">No floss today yet 😤</p><button id="n-floss">🦷 Flossed, log it too</button>'}
+    ${n === 3 ? '<p class="good">Mouth 3/3 ✓ proud of you 🪥</p>' : `<p class="bad">Mouth ${n}/3. Missing: ${missing.map((h) => noIcon(MOUTH[h])).join(', ')} 😤</p>
+      <div class="ticks">${missing.map((h) => `<button class="tick" data-h="${h}">${MOUTH[h]}, log it</button>`).join('')}</div>`}
+    ${scale('mood', 'Mood today')}
+    ${scale('energy', 'Energy today')}
     <button class="primary" id="n-save">Log goodnight</button>`, (r) => {
-    r.querySelector('#n-floss')?.addEventListener('click', (e) => { stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), 'floss', '1']], label: 'floss', marks: { floss: true } }); e.target.remove(); r.querySelector('.bad')?.remove(); });
+    const pick = { ...picked };
+    const paint = () => r.querySelectorAll('[data-scale]').forEach((g) => g.querySelectorAll('button').forEach((b) => b.classList.toggle('on', pick[g.dataset.scale] === b.dataset.v)));
+    r.querySelectorAll('[data-scale] button').forEach((b) => b.addEventListener('click', () => { const k = b.parentElement.dataset.scale; pick[k] = pick[k] === b.dataset.v ? undefined : b.dataset.v; paint(); }));
+    paint();
+    r.querySelectorAll('[data-h]').forEach((b) => b.addEventListener('click', () => { habit(b.dataset.h, '1', MOUTH[b.dataset.h]); openNight(pick); }));
     r.querySelector('#n-save').addEventListener('click', () => {
-      stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), 'asleep', at]], label: `goodnight ${at}` });
+      const now = clock(Date.now()), rows = [[nowKey(), now, 'asleep', at]];
+      if (pick.mood) rows.push([nowKey(), now, 'mood', pick.mood]);
+      if (pick.energy) rows.push([nowKey(), now, 'energy', pick.energy]);
+      stage({ kind: 'habits', op: 'add', rows, label: `goodnight ${at}` + (pick.mood ? ` · mood ${pick.mood}` : '') + (pick.energy ? ` · energy ${pick.energy}` : '') });
       closeSheet();
     });
   });

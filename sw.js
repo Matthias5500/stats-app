@@ -1,5 +1,5 @@
 // Caches the app shell so it opens offline; data always comes fresh from GitHub (app.js keeps the last copy).
-const SHELL = 'stats-v7';
+const SHELL = 'stats-v8';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'log.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== SHELL).map((k) => caches.delete(k))))); self.clients.claim(); });

@@ -60,7 +60,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .chip.good { color: var(--good); } .chip.bad { color: var(--bad); } .chip.warn { color: var(--warn); }
 .quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); gap: 6px; }
 .quick button { display: grid; justify-items: center; gap: 2px; padding: 10px 2px; font-size: 22px; line-height: 1; }
-.quick button span { font-size: 11px; color: var(--muted); }
+.quick button span { font-size: 10.5px; color: var(--muted); letter-spacing: -.01em; }
 .quick button:disabled { opacity: .45; }
 .quick button.live { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 @media (max-width: 360px) { .quick { grid-template-columns: repeat(4, 1fr); } }
@@ -201,3 +201,15 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 [data-theme=glass] .timer { background: linear-gradient(90deg, #c4b5fd, #67e8f9); -webkit-background-clip: text; background-clip: text; color: transparent !important; }
 @keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 @media (prefers-reduced-motion: reduce) { [data-theme=glass] .chart rect.bar { animation: none; } }
+
+/* habit sheets: tick buttons + 1–5 scale */
+.ticks { display: grid; gap: 8px; }
+.tick { text-align: left; padding: 14px; font-size: 16px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tick small { color: var(--muted); font-size: 12px; }
+.tick.on { border-color: var(--good); color: var(--good); opacity: .8; }
+.scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.scale button { padding: 12px 0; font-size: 17px; font-weight: 600; }
+.scale button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.quick button.done { border-color: var(--good); }
+[data-theme=glass] .scale button.on { background: var(--grad); color: #fff; }
+.sheet .good { color: var(--good); } .sheet .bad { color: var(--bad); }

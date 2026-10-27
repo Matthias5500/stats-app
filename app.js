@@ -19,7 +19,7 @@ applyTheme();
 
 const H = 3600e3;
 let CFG = {}; // loaded from stats.json in the data repo
-const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000';
+const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
 
 // ---------- dates ----------
@@ -113,6 +113,7 @@ function dayLog(text) {
   const no = /\b(no|plan|skipped|skip)\b/i;
   for (const line of life.split('\n')) {
     if (line.includes('🦷') && !/\bnot?\b|didn/i.test(line)) r.floss = true;
+    if (line.includes('🪥') && !/\bnot?\b|didn/i.test(line)) { if (/\bAM\b|morning/i.test(line)) r.brushAm = true; if (/\bPM\b|evening|night/i.test(line)) r.brushPm = true; }
     if (line.includes('🏋') && !no.test(line.split('·')[0])) r.gym = true;
     if (line.includes('🏃') && /\d+(\.\d+)? ?km/.test(line) && !no.test(line.split('·')[0])) r.run = true;
     if (/^\s*-\s*😴/u.test(line) && !/^\s*-\s*😴\s*(Woke|Plan)/u.test(line)) {
@@ -127,6 +128,25 @@ function dayLog(text) {
   r.streak = marks.includes('earned') ? 'earned' : marks.includes('frozen') ? 'frozen' : marks.length ? 'no' : study.trim() ? 'earned' : 'no';
   return r;
 }
+
+// one row of log/habits.csv (date,time,habit,value) into a day; the today bar uses it for unsaved rows too
+const CHORES = { dishes: '🍽️ Dishes', trash: '🗑️ Trash', floor: '🧹 Floor', laundry: '🧺 Laundry' };
+function habitInto(d, r) {
+  const h = r.habit;
+  if (h === 'floss') d.floss = true;
+  else if (h === 'brush_am') d.brushAm = true;
+  else if (h === 'brush_pm') d.brushPm = true;
+  else if (h === 'mouthwash') d.mouthwash = true;
+  else if (h === 'shower') d.showers = (d.showers || 0) + 1;
+  else if (h === 'caffeine') { d.caffeine = (d.caffeine || 0) + 1; d.cafTimes = [...(d.cafTimes || []), r.time]; }
+  else if (h === 'asleep' && r.value) d.asleep = r.value;
+  else if (h === 'awake' && r.value) d.awake = r.value;
+  else if ((h === 'mood' || h === 'energy') && Number(r.value)) d[h] = Number(r.value);
+  else if (CHORES[h]) d.chores = [...new Set([...(d.chores || []), h])];
+}
+const mouthCount = (d) => (d?.brushAm ? 1 : 0) + (d?.brushPm ? 1 : 0) + (d?.floss ? 1 : 0);
+const mouthDone = (d) => mouthCount(d) === 3;
+window.habitInto = habitInto; window.mouthCount = mouthCount;
 
 const sleepHours = (t) => { if (!t) return null; const [h, m] = t.split(':').map(Number); return (h < 12 ? h + 24 : h) + m / 60; };
 const fmtClock = (x) => `${String(Math.floor(x) % 24).padStart(2, '0')}:${String(Math.round((x % 1) * 60) % 60).padStart(2, '0')}`;
@@ -185,10 +205,7 @@ async function load(range) {
   const piano = csv(pianoText);
   for (const r of piano) day(r.date).piano = (day(r.date).piano || 0) + (Number(r.minutes) || 0);
   const habits = csv(habitText), spendLog = csv(spendText);
-  for (const r of habits) {
-    if (r.habit === 'floss') day(r.date).floss = true;
-    if (r.habit === 'asleep' && r.value) day(r.date).asleep = r.value;
-  }
+  for (const r of habits) habitInto(day(r.date), r);
   const weightRows = csv(weightText);
   const weights = weightRows.filter((r) => r.kg).map((r) => ({ date: r.date, kg: Number(r.kg), note: r.note || '' }))
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -358,15 +375,27 @@ const CARDS = [
       chart: bars(kc, { ref: goal, cls: (v) => (!goal ? 'var(--accent)' : near(v) ? 'var(--good)' : v > goal ? 'var(--warn)' : 'var(--accent)') }),
       tap: (i) => { const d = x.days[x.dates[i]]; return d?.meals ? `${short(x.dates[i])}: ${Math.round(d.kcal).toLocaleString('en')} kcal · ${d.meals} items` : `${short(x.dates[i])}: nothing logged`; } };
   } },
-  { id: 'floss', title: 'Floss', render(x) {
-    const ds = x.dates.filter((k) => k >= FLOSS_START() && k < x.today);
-    const f = x.dates.map((k) => (k < FLOSS_START() ? null : x.days[k]?.floss ? 1 : 0));
-    const n = ds.filter((k) => x.days[k]?.floss).length;
-    let streak = 0; for (let k = x.days[x.today]?.floss ? x.today : addDays(x.today, -1); x.days[k]?.floss; k = addDays(k, -1)) streak++;
-    return { big: `<span class="${ds.length && n / ds.length >= 0.7 ? 'good' : 'bad'}">${n}</span>`, unit: `/${ds.length} days`,
-      sub: `streak ${streak} 🦷` + (x.days[x.today]?.floss ? ' · done today' : ' · not yet today'),
-      chart: bars(f, { max: 1, cls: (v) => (v ? 'var(--good)' : 'var(--bad)') }),
-      tap: (i) => `${short(x.dates[i])}: ${x.dates[i] < FLOSS_START() ? 'before tracking' : x.days[x.dates[i]]?.floss ? 'flossed' : 'no floss'}` };
+  { id: 'mouth', title: 'Mouth hygiene', render(x) {
+    // done = brushed AM + brushed PM + flossed; before mouthStart only floss was tracked
+    const start = MOUTH_START(), ds = x.dates.filter((k) => k >= start && k < x.today);
+    const n = ds.filter((k) => mouthDone(x.days[k])).length, td = x.days[x.today];
+    let streak = 0; for (let k = mouthDone(td) ? x.today : addDays(x.today, -1); k >= start && mouthDone(x.days[k]); k = addDays(k, -1)) streak++;
+    const fl = x.dates.filter((k) => k >= FLOSS_START() && k < x.today), fn = fl.filter((k) => x.days[k]?.floss).length;
+    return { big: ds.length ? `<span class="${n / ds.length >= 0.7 ? 'good' : 'bad'}">${n}</span>` : `${mouthCount(td)}`, unit: ds.length ? `/${ds.length} days` : '/3 today',
+      sub: `streak ${streak} 🪥 · today ${mouthCount(td)}/3` + (fl.length ? ` · floss ${fn}/${fl.length}` : ''),
+      chart: bars(x.dates.map((k) => (k < FLOSS_START() ? null : mouthCount(x.days[k]))), { max: 3, cls: (v) => (v === 3 ? 'var(--good)' : v ? 'var(--warn)' : 'var(--bad)') }),
+      tap: (i) => { const k = x.dates[i], d = x.days[k] || {};
+        return k < FLOSS_START() ? `${short(k)}: before tracking` : `${short(k)}: ` + [d.brushAm ? '🪥 AM ✓' : '🪥 AM ✗', d.brushPm ? '🪥 PM ✓' : '🪥 PM ✗', d.floss ? '🧵 floss ✓' : '🧵 floss ✗', d.mouthwash && 'mouthwash ✓'].filter(Boolean).join(' · ') + (k < start ? ' (only floss tracked then)' : ''); } };
+  } },
+  { id: 'shower', title: 'Showers', render(x) {
+    const start = MOUTH_START(), ds = x.dates.filter((k) => k >= start);
+    const v = x.dates.map((k) => (k < start ? null : x.days[k]?.showers || 0));
+    const days = ds.filter((k) => x.days[k]?.showers).length, tot = sum(ds.map((k) => x.days[k]?.showers || 0));
+    const last = [...x.dates].reverse().find((k) => x.days[k]?.showers);
+    return { big: String(days), unit: `/${ds.length} days`,
+      sub: `${tot} shower${tot === 1 ? '' : 's'}` + (last ? ` · last ${last === x.today ? 'today' : daysBetween(last, x.today) + ' d ago'}` : ''),
+      chart: bars(v, { max: Math.max(2, ...v.filter((n) => n != null)), cls: (n) => (n ? 'var(--accent)' : 'var(--line)') }),
+      tap: (i) => { const k = x.dates[i]; return k < start ? `${short(k)}: before tracking` : `${short(k)}: ${x.days[k]?.showers || 0} shower${x.days[k]?.showers === 1 ? '' : 's'}`; } };
   } },
   { id: 'training', title: 'Training', render(x) {
     const g = x.dates.filter((k) => x.days[k]?.gym).length, r = x.dates.filter((k) => x.days[k]?.run).length;
@@ -384,6 +413,45 @@ const CARDS = [
       sub: `${v.filter((n) => n >= 25).length} of ${v.length} nights after 01:00` + (CFG.sleepTarget ? ` · line = ${CFG.sleepTarget}` : '') + ' · taller = later',
       chart: bars(h.map((n) => (n == null ? null : n - 21)), { max: 8, ref: CFG.sleepTarget ? sleepHours(CFG.sleepTarget) - 21 : undefined, cls: (n) => (n >= 4 ? 'var(--bad)' : n >= 3 ? 'var(--warn)' : 'var(--accent)') }),
       tap: (i) => `${short(x.dates[i])}: ${x.days[x.dates[i]]?.asleep ? 'asleep ~' + x.days[x.dates[i]].asleep : 'not logged'}` };
+  } },
+  { id: 'sleeplen', title: 'Sleep', render(x) {
+    // asleep on day D (goodnight) → awake tap on day D+1
+    const h = x.dates.map((k) => { const a = sleepHours(x.days[addDays(k, -1)]?.asleep), w = x.days[k]?.awake;
+      if (a == null || !w) return null; const [hh, mm] = w.split(':').map(Number); const d = hh + mm / 60 + 24 - a; return d > 0 && d < 16 ? Math.round(d * 10) / 10 : null; });
+    const v = h.filter((n) => n != null);
+    const wakes = x.dates.map((k) => x.days[k]?.awake).filter(Boolean).sort();
+    return { big: v.length ? avg(v).toFixed(1) : '—', unit: 'h avg',
+      sub: v.length ? `${v.filter((n) => n < 7).length} of ${v.length} nights under 7 h` + (wakes.length ? ` · usually up ~${wakes[Math.floor((wakes.length - 1) / 2)]}` : '') : 'tap ☀️ Awake in the morning to get this',
+      chart: bars(h, { max: 10, cls: (n) => (n < 6 ? 'var(--bad)' : n < 7 ? 'var(--warn)' : 'var(--good)') }),
+      tap: (i) => { const k = x.dates[i]; return h[i] != null ? `${short(k)}: ${h[i]} h (asleep ~${x.days[addDays(k, -1)].asleep}, up ${x.days[k].awake})` : `${short(k)}: ${x.days[k]?.awake ? 'up ' + x.days[k].awake + ', no goodnight the night before' : 'no awake tap'}`; } };
+  } },
+  { id: 'mood', title: 'Mood + energy', render(x) {
+    const m = x.dates.map((k) => x.days[k]?.mood ?? null), e = x.dates.map((k) => x.days[k]?.energy ?? null);
+    const am = avg(m.filter((n) => n != null)), ae = avg(e.filter((n) => n != null));
+    const face = (n) => ['', '😣', '🙁', '😐', '🙂', '😄'][Math.round(n)] || '';
+    return { big: am == null ? '—' : `${am.toFixed(1)} ${face(am)}`, unit: '/5 mood',
+      sub: am == null ? 'rate it at 😴 Goodnight' : `energy ${ae == null ? '—' : ae.toFixed(1) + '/5'} · ${m.filter((n) => n != null).length} days rated`,
+      chart: bars(m, { max: 5, cls: (n) => (n >= 4 ? 'var(--good)' : n >= 3 ? 'var(--accent)' : n >= 2 ? 'var(--warn)' : 'var(--bad)') }),
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return d.mood || d.energy ? `${short(x.dates[i])}: mood ${d.mood ?? '—'}/5 ${face(d.mood || 0)} · energy ${d.energy ?? '—'}/5` : `${short(x.dates[i])}: not rated`; } };
+  } },
+  { id: 'caffeine', title: 'Caffeine', render(x) {
+    const c = x.dates.map((k) => x.days[k]?.caffeine || null);
+    const start = MOUTH_START(), ds = x.dates.filter((k) => k >= start), tot = sum(ds.map((k) => x.days[k]?.caffeine || 0));
+    // "late" = after 16:00 or before the day ends at 04:00
+    const late = (t) => t >= '16:00' || t < '04:00';
+    const lates = ds.flatMap((k) => x.days[k]?.cafTimes || []).filter(late).length;
+    return { big: ds.length ? (tot / ds.length).toFixed(1) : '—', unit: '/day',
+      sub: `${tot} total · ${lates} after 16:00`,
+      chart: bars(c, { cls: () => 'var(--warn)' }),
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return d.caffeine ? `${short(x.dates[i])}: ${d.caffeine} × at ${d.cafTimes.join(', ')}` : `${short(x.dates[i])}: none`; } };
+  } },
+  { id: 'home', title: 'Household', render(x) {
+    const last = {}; for (const r of x.habits || []) if (CHORES[r.habit] && (!last[r.habit] || r.date > last[r.habit])) last[r.habit] = r.date;
+    const inR = x.dates.reduce((n, k) => n + (x.days[k]?.chores?.length || 0), 0);
+    return { big: String(inR), unit: `chore${inR === 1 ? '' : 's'}`,
+      sub: 'tap 🏠 Home when you did one',
+      html: `<ul class="list">${Object.entries(CHORES).map(([h, label]) => { const g = last[h] ? daysBetween(last[h], x.today) : null;
+        return `<li><span>${label}</span><span class="${g == null || g >= 7 ? 'bad' : g >= 3 ? 'warn' : 'good'}">${g == null ? 'not logged yet' : g === 0 ? 'today' : g + ' d ago'}</span></li>`; }).join('')}</ul>` };
   } },
   { id: 'exams', title: 'Coming up', render(x) {
     const next = x.deadlines.slice(0, 6);
@@ -479,7 +547,7 @@ let range = LS.get('range', 7);
 const $ = (s) => document.querySelector(s);
 
 function order() {
-  const saved = LS.get('order', []).flatMap((id) => (id === 'food' ? ['protein', 'kcal'] : [id])).filter((id) => CARDS.some((c) => c.id === id));
+  const saved = LS.get('order', []).flatMap((id) => (id === 'food' ? ['protein', 'kcal'] : id === 'floss' ? ['mouth'] : [id])).filter((id) => CARDS.some((c) => c.id === id));
   CARDS.forEach((c, i) => {
     if (saved.includes(c.id)) return;
     const before = CARDS.slice(0, i).map((p) => p.id).filter((id) => saved.includes(id)).pop();
