@@ -9,6 +9,7 @@ const HEADERS = {
   habits: 'date,time,habit,value',
   spend: 'date,time,eur,what,category',
   piano: 'date,time,minutes,note',
+  notes: 'date,time,kind,text,done',
 };
 
 const cell = (v) => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; };
@@ -138,55 +139,90 @@ function todayView() {
 }
 // one habits.csv row, staged
 const habit = (h, value = '1', label = h) => stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), h, value]], label });
+// ---------- quick buttons: favourites (pinned in ⚙, any number) + smart ones when their moment comes + ＋ for the rest ----------
+const hourNow = () => Number(clock(Date.now()).slice(0, 2));
+const pendingNotes = (kind) => (DATA.notes || []).filter((n) => !n.done && (!kind || n.kind === kind)).length + staged().filter((i) => i.kind === 'notes' && i.op === 'add' && (!kind || i.rows[0][2] === kind)).length;
+// badge(t) → text on the button; live(t) → glowing; smart(t, h) → shows up on its own (only buttons with an obvious "right moment")
+const BUTTONS = [
+  { id: 'awake', icon: '☀️', label: 'Awake', act: () => habit('awake', clock(Date.now()), `awake ${clock(Date.now())}`), badge: (t) => t.awake && '✓', off: (t) => !!t.awake,
+    smart: (t, h) => h >= 4 && h < 13 && !t.awake },
+  { id: 'mouth', icon: '🪥', label: 'Mouth', act: () => openMouth(), badge: (t) => `${mouthCount(t)}/3`, done: (t) => mouthCount(t) === 3,
+    smart: (t, h) => (h >= 4 && h < 12 && !t.brushAm) || ((h >= 21 || h < 4) && (!t.brushPm || !t.floss)) },
+  { id: 'shower', icon: '🚿', label: 'Shower', act: () => habit('shower', '1', 'shower'), badge: (t) => t.showers && (t.showers > 1 ? t.showers : '✓') },
+  { id: 'caffeine', icon: '☕', label: 'Caff', act: () => habit('caffeine', '1', 'caffeine'), badge: (t) => t.caffeine || '' },
+  { id: 'food', icon: '🍽️', label: 'Food', act: () => openNote('food'), badge: () => pendingNotes('food') ? '⏳' + pendingNotes('food') : '' },
+  { id: 'dump', icon: '💭', label: 'Dump', act: () => openNote('dump'), badge: () => pendingNotes('dump') ? '⏳' + pendingNotes('dump') : '' },
+  { id: 'gym', icon: '🏋️', label: 'Gym', act: () => openGym(), badge: (t) => (LS.get('workout', null) ? '●' : t.gym && '✓'), live: () => !!LS.get('workout', null),
+    smart: () => !!LS.get('workout', null) },
+  { id: 'run', icon: '🏃', label: 'Run', act: () => openRun(), badge: (t) => t.run && '✓' },
+  { id: 'piano', icon: '🎹', label: 'Piano', act: () => openPiano(), badge: (t) => (LS.get('pianoTimer', null) ? '●' : t.piano && Math.round(t.piano) + '′'), live: () => !!LS.get('pianoTimer', null),
+    smart: () => !!LS.get('pianoTimer', null) },
+  { id: 'home', icon: '🏠', label: 'Home', act: () => openHome(), badge: (t) => t.chores?.length || '' },
+  { id: 'weight', icon: '⚖️', label: 'Weight', act: () => openWeight(), badge: () => (DATA.weights || []).some((w) => w.date === nowKey()) && '✓' },
+  { id: 'spend', icon: '💸', label: 'Spend', act: () => openSpend() },
+  { id: 'night', icon: '😴', label: 'Night', act: () => openNight(), badge: (t) => t.asleep && '✓', smart: (t, h) => (h >= 22 || h < 4) && !t.asleep },
+];
+window.BUTTONS = BUTTONS;
+const DEFAULT_FAVS = ['mouth', 'shower', 'piano', 'gym', 'spend', 'food', 'dump'];
+const favs = () => LS.get('favs', DEFAULT_FAVS).filter((id) => BUTTONS.some((b) => b.id === id));
+window.favs = favs;
+const btnHtml = (b, t, smart) => {
+  const badge = b.badge?.(t);
+  return `<button data-b="${b.id}" class="${b.live?.(t) ? 'live' : ''}${b.done?.(t) ? ' done' : ''}${smart ? ' smart' : ''}" ${b.off?.(t) ? 'disabled' : ''}>${b.icon}<span>${b.label}</span>${badge ? `<b class="bdg">${badge}</b>` : ''}${smart ? '<i class="sp">✨</i>' : ''}</button>`;
+};
+function wireButtons(root, after) {
+  root.querySelectorAll('[data-b]').forEach((el) => el.addEventListener('click', () => { after?.(); BUTTONS.find((b) => b.id === el.dataset.b).act(); }));
+}
 window.renderToday = function () {
   const el = $('#today');
   if (!el || !DATA || !CFG.files) return;
-  const t = todayView(), items = staged(), wo = LS.get('workout', null), pt = LS.get('pianoTimer', null), goal = CFG.proteinGoal;
-  const st = streakInfo(DATA.days, nowKey());
+  const t = todayView(), items = staged(), h = hourNow(), f = favs();
+  const smart = BUTTONS.filter((b) => !f.includes(b.id) && b.smart?.(t, h));
+  const waiting = pendingNotes();
   el.innerHTML = `
-    <div class="chips">
-      <span class="chip ${st.today ? 'fire' : ''}">🔥 ${st.cur}${st.today ? ' ✓' : ''}</span>
-      <span class="chip ${t.protein >= goal ? 'good' : ''}">🍽️ ${Math.round(t.protein || 0)}/${goal} g</span>
-      <span class="chip ${mouthCount(t) === 3 ? 'good' : ''}">🪥 ${mouthCount(t)}/3</span>
-      <span class="chip ${t.showers ? 'good' : ''}">🚿 ${t.showers ? '✓' : '–'}</span>
-      ${t.caffeine ? `<span class="chip">☕ ${t.caffeine}</span>` : ''}
-      <span class="chip ${t.gym || t.run ? 'good' : ''}">${t.gym ? '🏋️ ✓' : '🏋️ –'} ${t.run ? '🏃 ✓' : '🏃 –'}</span>
-      ${F('piano') ? `<span class="chip ${t.piano ? 'good' : ''}">🎹 ${Math.round(t.piano || 0)} min</span>` : ''}
-      <button class="chip" id="entries">↺ Undo…</button>
-    </div>
-    <div class="quick">
-      <button id="q-awake" ${t.awake ? 'disabled' : ''}>☀️<span>${t.awake ? 'Up ' + t.awake : 'Awake'}</span></button>
-      <button id="q-mouth" class="${mouthCount(t) === 3 ? 'done' : ''}">🪥<span>Mouth</span></button>
-      <button id="q-shower">🚿<span>Shower</span></button>
-      <button id="q-caf">☕<span>Caff</span></button>
-      <button id="q-gym" class="${wo ? 'live' : ''}">🏋️<span>${wo ? 'Resume' : 'Gym'}</span></button>
-      <button id="q-run">🏃<span>Run</span></button>
-      ${F('piano') ? `<button id="q-piano" class="${pt ? 'live' : ''}">🎹<span>${pt ? 'Playing' : 'Piano'}</span></button>` : ''}
-      <button id="q-home">🏠<span>Home</span></button>
-      <button id="q-weight">⚖️<span>Weight</span></button>
-      <button id="q-spend">💸<span>Spend</span></button>
-      <button id="q-night">😴<span>Night</span></button>
-    </div>
-    ${items.length ? `<div class="unsaved">
-      <div class="unsaved-head"><b>Not saved yet</b><span class="badge">${items.length}</span></div>
-      <ul>${items.map((i) => `<li><span>${i.op === 'del' ? '🗑️ undo ' : ''}${esc(i.label)}</span><button class="x" data-unstage="${i.id}" aria-label="Remove">✕</button></li>`).join('')}</ul>
-      <button class="primary" id="save-all" ${saving ? 'disabled' : ''}>${saving ? 'Saving…' : `Save ${items.length} change${items.length === 1 ? '' : 's'}`}</button>
-    </div>` : ''}`;
-  el.querySelectorAll('[data-unstage]').forEach((b) => b.addEventListener('click', () => unstage(Number(b.dataset.unstage))));
-  $('#save-all')?.addEventListener('click', saveAll);
-  $('#entries').addEventListener('click', openEntries);
-  $('#q-awake').addEventListener('click', () => habit('awake', clock(Date.now()), `awake ${clock(Date.now())}`));
-  $('#q-mouth').addEventListener('click', openMouth);
-  $('#q-shower').addEventListener('click', () => habit('shower', '1', 'shower'));
-  $('#q-caf').addEventListener('click', () => habit('caffeine', '1', 'caffeine'));
-  $('#q-home').addEventListener('click', openHome);
-  $('#q-gym').addEventListener('click', openGym);
-  $('#q-run').addEventListener('click', openRun);
-  $('#q-piano')?.addEventListener('click', openPiano);
-  $('#q-weight').addEventListener('click', openWeight);
-  $('#q-spend').addEventListener('click', openSpend);
-  $('#q-night').addEventListener('click', () => openNight());
+    <div class="quick">${f.map((id) => btnHtml(BUTTONS.find((b) => b.id === id), t)).join('')}${smart.map((b) => btnHtml(b, t, true)).join('')}<button id="q-more" class="plus" aria-label="More">＋</button></div>
+    ${waiting ? `<p class="waiting">⏳ ${waiting} note${waiting === 1 ? '' : 's'} waiting for boss</p>` : ''}
+    ${items.length ? `<button class="save-pill" id="save-pill">${saving ? 'Saving…' : `💾 Save ${items.length}`}</button>` : ''}`;
+  wireButtons(el);
+  $('#q-more').addEventListener('click', openMore);
+  $('#save-pill')?.addEventListener('click', openUnsaved);
 };
+function openMore() {
+  const t = todayView();
+  openSheet('Log something', `<div class="quick all">${BUTTONS.map((b) => btnHtml(b, t)).join('')}<button id="m-undo">↺<span>Undo</span></button></div>`, (r) => {
+    wireButtons(r, closeSheet);
+    r.querySelector('#m-undo').addEventListener('click', openEntries);
+  });
+}
+function openUnsaved() {
+  const items = staged();
+  if (!items.length) { closeSheet(); return; }
+  openSheet(`Not saved yet · ${items.length}`, `<ul class="list unsaved-list">${items.map((i) => `<li><span>${i.op === 'del' ? '🗑️ undo ' : ''}${esc(i.label)}</span><button class="x" data-unstage="${i.id}" aria-label="Remove">✕</button></li>`).join('')}</ul>
+    <button class="primary" id="save-all" ${saving ? 'disabled' : ''}>${saving ? 'Saving…' : `Save ${items.length} change${items.length === 1 ? '' : 's'}`}</button>`, (r) => {
+    r.querySelectorAll('[data-unstage]').forEach((b) => b.addEventListener('click', () => { unstage(Number(b.dataset.unstage)); openUnsaved(); }));
+    r.querySelector('#save-all').addEventListener('click', () => { closeSheet(); saveAll(); });
+  });
+}
+
+// ---------- quick notes: rough food descriptions + brain dumps; boss turns them into real entries in the next session ----------
+function openNote(kind) {
+  const food = kind === 'food';
+  openSheet(food ? 'Food 🍽️' : 'Brain dump 💭', `
+    <p class="sub">${food ? 'Rough is fine ("2 Semmel with ham + a coffee"). Boss estimates kcal + protein next session.' : 'Anything. Boss files it next session and tells you where it went.'}</p>
+    <textarea id="n-text" rows="${food ? 3 : 7}" placeholder="${food ? 'what did you eat?' : 'dump it here…'}"></textarea>
+    ${food ? '<label for="n-time">Eaten earlier? (leave empty = now)</label><input id="n-time" type="time">' : ''}
+    <button class="primary" id="n-save">Save note</button>`, (r) => {
+    setTimeout(() => r.querySelector('#n-text').focus(), 50);
+    r.querySelector('#n-save').addEventListener('click', () => {
+      const text = r.querySelector('#n-text').value.trim();
+      if (!text) { toast('Write something first'); return; }
+      let ms = Date.now(); const tv = r.querySelector('#n-time')?.value;
+      if (tv) { const [hh, mm] = tv.split(':').map(Number), [nh, nm] = clock(ms).split(':').map(Number); ms -= ((((nh * 60 + nm) - (hh * 60 + mm)) % 1440 + 1440) % 1440) * 60e3; }
+      stage({ kind: 'notes', op: 'add', rows: [[dayKey(ms), clock(ms), kind, text, '']], label: `${food ? '🍽️' : '💭'} ${text.length > 40 ? text.slice(0, 40) + '…' : text}` });
+      closeSheet();
+    });
+  });
+}
 
 // ---------- undo saved entries (today + yesterday) ----------
 function openEntries() {
@@ -197,6 +233,7 @@ function openEntries() {
     ...pick(DATA.weightRows).map((r) => ({ kind: 'weight', match: r, label: `weight ${r.kg} kg` })),
     ...pick(DATA.runs).map((r) => ({ kind: 'runs', match: r, label: `run ${r.km} km`, marks: { run: false } })),
     ...pick(DATA.spendLog).map((r) => ({ kind: 'spend', match: r, label: `spend €${r.eur} ${r.what}` })),
+    ...pick(DATA.notes).filter((r) => !r.done).map((r) => ({ kind: 'notes', match: r, label: `${r.kind === 'food' ? '🍽️' : '💭'} ${r.text.slice(0, 40)}` })),
     ...pick(DATA.piano).map((r) => ({ kind: 'piano', match: r, label: `piano ${r.minutes} min`, marks: { piano: 0 } })),
     ...Object.values(Object.groupBy ? Object.groupBy(pick(DATA.gym), (r) => r.date + ' ' + r.time) : pick(DATA.gym).reduce((m, r) => ((m[r.date + ' ' + r.time] ||= []).push(r), m), {}))
       .map((rows) => ({ kind: 'gym', match: { date: rows[0].date, time: rows[0].time }, label: `gym ${rows[0].workout} · ${rows.length} sets`, marks: { gym: false } })),

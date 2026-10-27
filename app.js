@@ -83,7 +83,8 @@ const strip = (s) => s.replace(/\*\*|__|`/g, '').replace(/\[([^\]]+)\]\([^)]*\)/
 
 function studyTime(timeFiles, tagsText) {
   const tags = {};
-  for (const r of csv(tagsText)) tags[r.session] = r.tag || 'study';
+  const course = {};
+  for (const r of csv(tagsText)) { tags[r.session] = r.tag || 'study'; course[r.session] = r.course || ''; }
   const bySession = {};
   for (const text of timeFiles) for (const r of csv(text)) {
     const t = Date.parse(r.ts); if (!r.session || isNaN(t)) continue;
@@ -91,7 +92,7 @@ function studyTime(timeFiles, tagsText) {
   }
   const out = {};
   for (const [sid, evs] of Object.entries(bySession)) {
-    const tag = tags[sid] || 'study';
+    const tag = tags[sid] || 'study', crs = course[sid] || 'other';
     if ((CFG.skipTags || []).includes(tag)) continue;
     evs.sort((a, b) => a[0] - b[0]);
     let paused = false;
@@ -101,7 +102,11 @@ function studyTime(timeFiles, tagsText) {
       if (paused && (ev === 'prompt' || ev === 'brb')) { paused = ev === 'brb'; return; }
       paused = paused || ev === 'brb';
       const gap = t - evs[i - 1][0];
-      if (gap < 20 * 60e3) d[tag === (CFG.chatTag || 'chat') ? 'chat' : 'study'] += gap / 60e3;
+      if (gap < 20 * 60e3) {
+        const chat = tag === (CFG.chatTag || 'chat');
+        d[chat ? 'chat' : 'study'] += gap / 60e3;
+        if (!chat) (d.courses ||= {})[crs] = (d.courses[crs] || 0) + gap / 60e3;
+      }
     });
   }
   return out;
@@ -169,10 +174,10 @@ async function load(range) {
   const logFiles = listing.filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f.name));
   const timeNames = names.filter((n) => /^time-.*\.csv$/.test(n) && F('logDir') + '/' + n !== F('timeTags'));
 
-  const [ratings, food, tags, deadlineText, money, tx, weightText, gymText, runText, habitText, spendText, pianoText, ...rest] = await Promise.all([
+  const [ratings, food, tags, deadlineText, money, tx, weightText, gymText, runText, habitText, spendText, pianoText, notesText, ...rest] = await Promise.all([
     gh(F('ratings')), gh(F('food')), gh(F('timeTags')),
     gh(F('deadlines')), gh(F('money')), gh(F('transactions')),
-    gh(F('weight')), gh(F('gym')), gh(F('runs')), gh(F('habits')), gh(F('spend')), F('piano') ? gh(F('piano')) : null,
+    gh(F('weight')), gh(F('gym')), gh(F('runs')), gh(F('habits')), gh(F('spend')), F('piano') ? gh(F('piano')) : null, F('notes') ? gh(F('notes')) : null,
     ...timeNames.map((n) => gh(F('logDir') + '/' + n)),
   ]);
   const timeFiles = rest;
@@ -194,7 +199,8 @@ async function load(range) {
   const days = {};
   const day = (k) => (days[k] ||= { kcal: 0, protein: 0, meals: 0 });
   for (const r of csv(ratings)) Object.assign(day(r.date), { score: Number(r.score), final: r.final === 'final', why: r.why });
-  for (const r of csv(food)) { const d = day(r.date); d.kcal += Number(r.kcal) || 0; d.protein += Number(r.protein_g) || 0; d.meals++; }
+  const foodRows = csv(food);
+  for (const r of foodRows) { const d = day(r.date); d.kcal += Number(r.kcal) || 0; d.protein += Number(r.protein_g) || 0; d.meals++; }
   for (const [k, v] of Object.entries(studyTime(timeFiles, tags))) Object.assign(day(k), v);
   logFiles.forEach((f, i) => Object.assign(day(f.name.slice(0, 10)), parsedLogs[i], { logged: true }));
 
@@ -225,7 +231,7 @@ async function load(range) {
   }
   for (const r of spendLog) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
 
-  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, weightRows, cfg: CFG, fetched: Date.now() };
+  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, foodRows, notes: csv(notesText), weightRows, cfg: CFG, fetched: Date.now() };
 }
 
 // ---------- tiny charts ----------
@@ -557,35 +563,148 @@ function order() {
 }
 const hidden = () => new Set(LS.get('hidden', []));
 
-function render() {
-  if (!DATA) return;
-  if (tab === 'update') { renderUpdate(); return; }
-  window.renderToday?.();
+// ---------- layouts: tiles (default) · full cards · section tabs · collapsed list; tap any card → detail sheet ----------
+const SECTION = { streak: 'study', score: 'study', study: 'study', exams: 'study', piano: 'habits', protein: 'body', kcal: 'body', training: 'body', weight: 'body',
+  sleep: 'body', sleeplen: 'body', mouth: 'habits', shower: 'habits', mood: 'habits', caffeine: 'habits', home: 'habits', money: 'money' };
+const SECTIONS = [['study', 'Study'], ['body', 'Body'], ['habits', 'Habits'], ['money', 'Money']];
+const LAYOUTS = [['tiles', 'Tiles'], ['full', 'Full cards'], ['sections', 'Section tabs'], ['list', 'Collapsed list']];
+const layout = () => LS.get('layout', 'tiles');
+const bigSet = () => new Set(LS.get('big', ['streak', 'study']));
+
+function ctxFor() {
   const first = Object.keys(DATA.days).sort()[0] || DATA.today;
   const from = range === 'all' ? first : addDays(DATA.today, -(range - 1));
   const dates = span(from, DATA.today);
   const prev = range === 'all' ? [] : span(addDays(from, -range), addDays(from, -1));
-  const ctx = { ...DATA, dates, prev };
-  const off = hidden();
-  const root = $('#cards'); root.textContent = '';
-  for (const id of order()) {
-    if (off.has(id)) continue;
-    const def = CARDS.find((c) => c.id === id);
-    let r;
-    try { r = def.render(ctx); } catch (e) { r = { big: '—', sub: 'couldn’t read this one: ' + esc(e.message) }; }
+  return { ...DATA, dates, prev };
+}
+const run = (def, ctx) => { try { return def.render(ctx); } catch (e) { return { big: '—', sub: 'couldn’t read this one: ' + esc(e.message) }; } };
+
+function fullCard(def, r, ctx) {
+  const el = document.createElement('article');
+  el.className = 'card';
+  el.innerHTML = `${r.head ? `<div class="card-head"><h2>${def.title}</h2>${r.head}</div>` : `<h2>${def.title}</h2>`}<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.chart || ''}${r.html || ''}${r.tap ? '<div class="detail"></div>' : ''}`;
+  if (r.tap) {
+    const det = el.querySelector('.detail');
+    det.textContent = r.tap(ctx.dates.length - 1);
+    el.querySelector('svg')?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = r.tap(Number(i)); });
+  }
+  r.wire?.(el);
+  // tapping the card itself (not its chart, calendar or buttons) opens the details
+  el.addEventListener('click', (ev) => { if (!ev.target.closest('button, svg, input, a')) openDetail(def.id); });
+  return el;
+}
+
+function render() {
+  if (!DATA) return;
+  if (tab === 'update') { renderUpdate(); return; }
+  window.renderToday?.();
+  const ctx = ctxFor(), off = hidden(), mode = layout(), big = bigSet();
+  const root = $('#cards'); root.textContent = ''; root.className = 'cards layout-' + mode;
+  let ids = order().filter((id) => !off.has(id));
+  if (mode === 'sections') {
+    const sec = LS.get('section', 'study');
+    const seg = document.createElement('div'); seg.className = 'seg';
+    seg.innerHTML = SECTIONS.map(([k, l]) => `<button data-sec="${k}" class="${k === sec ? 'on' : ''}">${l}</button>`).join('');
+    seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { LS.set('section', b.dataset.sec); render(); }));
+    root.appendChild(seg);
+    ids = ids.filter((id) => (SECTION[id] || 'habits') === sec);
+  }
+  let grid = null;
+  for (const id of ids) {
+    const def = CARDS.find((c) => c.id === id), r = run(def, ctx);
+    if (mode === 'full' || mode === 'sections' || (mode === 'tiles' && big.has(id))) { grid = null; root.appendChild(fullCard(def, r, ctx)); continue; }
     const el = document.createElement('article');
-    el.className = 'card';
-    el.innerHTML = `${r.head ? `<div class="card-head"><h2>${def.title}</h2>${r.head}</div>` : `<h2>${def.title}</h2>`}<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.chart || ''}${r.html || ''}${r.tap ? '<div class="detail"></div>' : ''}`;
-    if (r.tap) {
-      const det = el.querySelector('.detail');
-      const lastI = dates.length - 1;
-      det.textContent = r.tap(lastI);
-      el.querySelector('svg')?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = r.tap(Number(i)); });
+    if (mode === 'tiles') {
+      if (!grid) { grid = document.createElement('div'); grid.className = 'tiles'; root.appendChild(grid); }
+      el.className = 'tile';
+      el.innerHTML = `<h2>${def.title}</h2><div class="big">${r.big}<small>${r.unit || ''}</small></div>${r.chart || ''}`;
+      grid.appendChild(el);
+    } else {
+      el.className = 'row-card';
+      el.innerHTML = `<span class="rc-t">${def.title}</span><span class="rc-v">${r.big}<small>${r.unit || ''}</small></span><span class="chev">›</span>`;
+      root.appendChild(el);
     }
-    r.wire?.(el);
-    root.appendChild(el);
+    el.addEventListener('click', () => openDetail(id));
   }
 }
+
+// ---------- detail sheets ----------
+const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const listHtml = (rows) => `<ul class="list dl">${rows.map(([a, b, cls]) => `<li><span>${a}</span><span class="${cls || ''}">${b}</span></li>`).join('')}</ul>`;
+const h3 = (t) => `<h3 class="dh">${t}</h3>`;
+const inRange = (x, rows) => rows.filter((r) => r.date >= x.dates[0] && r.date <= x.today);
+function topBy(rows, key, n = 8) {
+  const g = {}; for (const r of rows) { const k = (r.item || '').trim(); if (k) g[k] = (g[k] || 0) + (Number(r[key]) || 0); }
+  return Object.entries(g).sort((a, b) => b[1] - a[1]).slice(0, n);
+}
+function foodDetail(x, key, unit) {
+  const today = x.foodRows.filter((r) => r.date === x.today).sort((a, b) => (Number(b[key]) || 0) - (Number(a[key]) || 0));
+  const tot = sum(today.map((r) => Number(r[key]) || 0)), rows = inRange(x, x.foodRows), all = sum(rows.map((r) => Number(r[key]) || 0));
+  let s = h3(`Today · ${Math.round(tot).toLocaleString('en')} ${unit}`) + (today.length ? listHtml(today.map((r) => [`${esc(r.item)}${r.time ? ` <small>${esc(r.time)}</small>` : ''}`, `${Math.round(Number(r[key]) || 0).toLocaleString('en')} ${unit} · ${pct(Number(r[key]) || 0, tot)} %`])) : '<p class="sub">Nothing logged today yet.</p>');
+  s += h3('Biggest sources in this range') + listHtml(topBy(rows, key).map(([k, v]) => [esc(k), `${Math.round(v).toLocaleString('en')} ${unit} · ${pct(v, all)} %`]));
+  if (key === 'kcal') {
+    const out = sum(rows.filter((r) => /eating out|buffet/i.test(r.source)).map((r) => Number(r.kcal) || 0));
+    s += `<p class="sub">Eating out: ${pct(out, all)} % of all kcal in this range.</p>`;
+  }
+  const pending = (x.notes || []).filter((n) => n.kind === 'food' && !n.done);
+  if (pending.length) s += `<p class="sub">⏳ ${pending.length} food note${pending.length === 1 ? '' : 's'} waiting for boss (not counted yet).</p>`;
+  return s;
+}
+const sleepLen = (x, k) => { const a = sleepHours(x.days[addDays(k, -1)]?.asleep), w = x.days[k]?.awake;
+  if (a == null || !w) return null; const [hh, mm] = w.split(':').map(Number); const d = hh + mm / 60 + 24 - a; return d > 0 && d < 16 ? Math.round(d * 10) / 10 : null; };
+const back = (x) => [...x.dates].reverse();
+const DETAILS = {
+  protein: (x) => foodDetail(x, 'protein_g', 'g') + h3(`Days ≥ ${PROTEIN_GOAL()} g`) + listHtml(back(x).filter((k) => x.days[k]?.meals).map((k) => [short(k), `${Math.round(x.days[k].protein)} g`, x.days[k].protein >= PROTEIN_GOAL() ? 'good' : 'warn'])),
+  kcal: (x) => foodDetail(x, 'kcal', 'kcal'),
+  piano: (x) => {
+    const rows = inRange(x, x.piano || []).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+    if (!rows.length) return '<p class="sub">No piano in this range yet. ▶ Start next time you sit down.</p>';
+    const longest = rows.reduce((m, r) => (Number(r.minutes) > Number(m.minutes) ? r : m)), times = rows.map((r) => r.time).filter(Boolean).sort();
+    const pieces = {}; rows.forEach((r) => r.note && (pieces[r.note] = (pieces[r.note] || 0) + Number(r.minutes)));
+    return listHtml([['Longest session', `${longest.minutes} min · ${short(longest.date)}`], ['Usually starts', times.length ? '~' + times[Math.floor((times.length - 1) / 2)] : '—'], ['Sessions', String(rows.length)]])
+      + (Object.keys(pieces).length ? h3('Most played') + listHtml(Object.entries(pieces).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => [esc(k), `${v} min`])) : '')
+      + h3('Sessions') + listHtml(rows.slice(0, 40).map((r) => [`${short(r.date)} ${esc(r.time)}${r.note ? ' · ' + esc(r.note) : ''}`, `${r.minutes} min`]));
+  },
+  study: (x) => {
+    const per = {}; x.dates.forEach((k) => Object.entries(x.days[k]?.courses || {}).forEach(([c, m]) => (per[c] = (per[c] || 0) + m)));
+    const tot = sum(Object.values(per));
+    return h3('By course') + listHtml(Object.entries(per).sort((a, b) => b[1] - a[1]).map(([c, m]) => [esc(c), `${(m / 60).toFixed(1)} h · ${pct(m, tot)} %`]))
+      + h3('By day') + listHtml(back(x).filter((k) => x.days[k]?.study).map((k) => [short(k), `${(x.days[k].study / 60).toFixed(1)} h · ` + Object.entries(x.days[k].courses || {}).sort((a, b) => b[1] - a[1]).map(([c, m]) => `${esc(c.split(' ')[0])} ${(m / 60).toFixed(1)}`).join(', ')]));
+  },
+  sleeplen: (x) => {
+    const n = back(x).map((k) => [k, sleepLen(x, k)]).filter(([, h]) => h != null);
+    const wkend = (k) => [0, 6].includes(new Date(k + 'T12:00:00Z').getUTCDay());
+    const a = (f) => { const v = n.filter(([k]) => f(wkend(k))).map(([, h]) => h); return v.length ? avg(v).toFixed(1) + ' h' : '—'; };
+    return listHtml([['Weeknights', a((w) => !w)], ['Weekends (up on Sat/Sun)', a((w) => w)]])
+      + h3('Nights') + listHtml(n.map(([k, h]) => [`${short(k)} · asleep ~${x.days[addDays(k, -1)].asleep} → up ${x.days[k].awake}`, `${h} h`, h < 6 ? 'bad' : h < 7 ? 'warn' : 'good']));
+  },
+  mouth: (x) => `<table class="grid-t"><tr><th></th><th>AM</th><th>PM</th><th>Floss</th><th>Wash</th></tr>${back(x).filter((k) => k >= FLOSS_START()).map((k) => { const d = x.days[k] || {};
+    return `<tr><td>${short(k)}</td>${[d.brushAm, d.brushPm, d.floss, d.mouthwash].map((v) => `<td class="${v ? 'good' : 'bad'}">${v ? '✓' : '·'}</td>`).join('')}</tr>`; }).join('')}</table>`,
+  caffeine: (x) => listHtml(back(x).filter((k) => x.days[k]?.caffeine).map((k) => { const t = [...x.days[k].cafTimes].sort((a, b) => (a < '04:00' ? '24' + a : a).localeCompare(b < '04:00' ? '24' + b : b));
+    return [`${short(k)} · ${t.join(', ')}`, `${t.length} · latest ${t[t.length - 1]}`, t.some((v) => v >= '16:00' || v < '04:00') ? 'warn' : '']; })) || '<p class="sub">None logged.</p>',
+  home: (x) => Object.entries(CHORES).map(([h, l]) => { const ds = (x.habits || []).filter((r) => r.habit === h).map((r) => r.date).sort().reverse().slice(0, 10);
+    return h3(l) + (ds.length ? `<p class="sub">${ds.map(short).join(' · ')}</p>` : '<p class="sub">never logged</p>'); }).join(''),
+  mood: (x) => listHtml(back(x).filter((k) => x.days[k]?.mood || x.days[k]?.energy).map((k) => { const d = x.days[k], h = sleepLen(x, k);
+    return [short(k), `mood ${d.mood ?? '—'} · energy ${d.energy ?? '—'}${h != null ? ` · slept ${h} h` : ''}`]; })) || '<p class="sub">Rate it at 😴 Night.</p>',
+  money: (x) => h3('Last 10') + listHtml([...x.spends].filter((s) => s.date <= x.today).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10).map((s) => [`${short(s.date)} · ${esc(s.what)} <small>${esc(s.cat)}</small>`, `€${s.eur.toFixed(2)}`])),
+  weight: (x) => { const w = inRange(x, x.weights).reverse();
+    return listHtml(w.map((r) => { const wk = x.weights.filter((q) => q.date > addDays(r.date, -7) && q.date <= r.date);
+      return [`${short(r.date)}${r.note ? ' <small>' + esc(r.note) + '</small>' : ''}`, `${r.kg.toFixed(1)} kg · 7d ⌀ ${avg(wk.map((q) => q.kg)).toFixed(1)}`]; })); },
+};
+function openDetail(id) {
+  const def = CARDS.find((c) => c.id === id), ctx = ctxFor(), r = run(def, ctx);
+  let extra = '';
+  try { extra = DETAILS[id] ? DETAILS[id](ctx) : r.tap ? h3('Day by day') + listHtml(back(ctx).map((k) => [r.tap(ctx.dates.indexOf(k)), ''])) : ''; } catch (e) { extra = `<p class="sub">couldn’t build details: ${esc(e.message)}</p>`; }
+  openSheet(def.title, `<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.head || ''}${r.chart || ''}${r.tap ? '<div class="detail"></div>' : ''}${r.html || ''}${extra}`, (root) => {
+    if (r.tap) {
+      const det = root.querySelector('.detail'); det.textContent = r.tap(ctx.dates.length - 1);
+      root.querySelector('svg.chart')?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = r.tap(Number(i)); });
+    }
+    r.wire?.(root);
+  });
+}
+window.openDetail = openDetail;
 
 async function refresh() {
   if (!LS.get('conn', {}).token) { $('#setup').hidden = false; return; }
@@ -620,15 +739,36 @@ $('#save-token').addEventListener('click', () => {
 $('#change-token').addEventListener('click', () => { $('#settings').hidden = true; $('#setup').hidden = false; });
 
 function drawList() {
-  const off = hidden(), ul = $('#card-list'); ul.textContent = '';
+  const off = hidden(), big = bigSet(), ul = $('#card-list'); ul.textContent = '';
   order().forEach((id, i, all) => {
     const def = CARDS.find((c) => c.id === id);
     const li = document.createElement('li');
-    li.innerHTML = `<label><input type="checkbox" id="c-${id}" ${off.has(id) ? '' : 'checked'}> ${def.title}</label><button aria-label="Move up" ${i ? '' : 'disabled'}>↑</button><button aria-label="Move down" ${i < all.length - 1 ? '' : 'disabled'}>↓</button>`;
+    li.innerHTML = `<label><input type="checkbox" id="c-${id}" ${off.has(id) ? '' : 'checked'}> ${def.title}</label><button class="sz" aria-label="Big or small tile">${big.has(id) ? 'Big' : 'Small'}</button><button aria-label="Move up" ${i ? '' : 'disabled'}>↑</button><button aria-label="Move down" ${i < all.length - 1 ? '' : 'disabled'}>↓</button>`;
     li.querySelector('input').addEventListener('change', (e) => { const h = hidden(); e.target.checked ? h.delete(id) : h.add(id); LS.set('hidden', [...h]); });
-    const [up, down] = li.querySelectorAll('button');
+    const [sz, up, down] = li.querySelectorAll('button');
+    sz.addEventListener('click', () => { const b = bigSet(); b.has(id) ? b.delete(id) : b.add(id); LS.set('big', [...b]); drawList(); });
     const move = (d) => { const o = order(); o.splice(i, 1); o.splice(i + d, 0, id); LS.set('order', o); drawList(); };
     up.addEventListener('click', () => move(-1)); down.addEventListener('click', () => move(1));
+    ul.appendChild(li);
+  });
+}
+function drawLayouts() {
+  const el = $('#layout-pick');
+  el.innerHTML = LAYOUTS.map(([k, l]) => `<button data-l="${k}" class="${k === layout() ? 'on' : ''}">${l}</button>`).join('');
+  el.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { LS.set('layout', b.dataset.l); drawLayouts(); }));
+}
+function drawFavs() {
+  const B = window.BUTTONS || [], favs = window.favs?.() || [], ul = $('#fav-list'); ul.textContent = '';
+  const ids = [...favs, ...B.map((b) => b.id).filter((id) => !favs.includes(id))];
+  ids.forEach((id) => {
+    const b = B.find((q) => q.id === id); if (!b) return;
+    const on = favs.includes(id), i = favs.indexOf(id);
+    const li = document.createElement('li');
+    li.innerHTML = `<label><input type="checkbox" ${on ? 'checked' : ''}> ${b.icon} ${b.label}${b.smart ? ' <small>✨ smart</small>' : ''}</label>${on ? `<button aria-label="Move up" ${i ? '' : 'disabled'}>↑</button><button aria-label="Move down" ${i < favs.length - 1 ? '' : 'disabled'}>↓</button>` : ''}`;
+    li.querySelector('input').addEventListener('change', (e) => { const f = window.favs().filter((x) => x !== id); if (e.target.checked) f.push(id); LS.set('favs', f); drawFavs(); });
+    const [up, down] = li.querySelectorAll('button');
+    const move = (d) => { const f = window.favs(); f.splice(i, 1); f.splice(i + d, 0, id); LS.set('favs', f); drawFavs(); };
+    up?.addEventListener('click', () => move(-1)); down?.addEventListener('click', () => move(1));
     ul.appendChild(li);
   });
 }
@@ -638,7 +778,7 @@ function drawThemes() {
     b.onclick = () => { LS.set('theme', b.dataset.pick); applyTheme(); drawThemes(); render(); };
   });
 }
-$('#open-settings').addEventListener('click', () => { drawList(); drawThemes(); $('#settings').hidden = false; });
+$('#open-settings').addEventListener('click', () => { drawLayouts(); drawFavs(); drawList(); drawThemes(); $('#settings').hidden = false; });
 $('#close-settings').addEventListener('click', () => { $('#settings').hidden = true; render(); });
 
 DATA = LS.get('last', null);
