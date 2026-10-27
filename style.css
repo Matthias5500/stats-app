@@ -58,12 +58,13 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font-size: 13px; padding: 4px 10px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 .chip.good { color: var(--good); } .chip.bad { color: var(--bad); } .chip.warn { color: var(--warn); }
-.quick { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); gap: 6px; }
 .quick button { display: grid; justify-items: center; gap: 2px; padding: 10px 2px; font-size: 22px; line-height: 1; }
 .quick button span { font-size: 11px; color: var(--muted); }
 .quick button:disabled { opacity: .45; }
 .quick button.live { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-@media (max-width: 360px) { .quick { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 360px) { .quick { grid-template-columns: repeat(4, 1fr); } }
+.quick button span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .sheet-in { display: grid; gap: 10px; align-content: start; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sheet select, .sheet input[type=date] { font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 100%; }
@@ -147,3 +148,56 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   .headline { font-size: 19px; line-height: 1.3; }
   .focus { font-size: 17px; line-height: 1.35; }
 }
+
+/* card header with a button (piano), timer, theme picker */
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.card-btn { padding: 6px 12px; font-size: 14px; font-weight: 650; background: var(--accent); color: var(--bg); border: 0; }
+.card-btn.live { background: var(--bad); color: #fff; }
+.timer { font-size: 56px; font-weight: 700; text-align: center; margin: 8px 0 0 !important; color: var(--fg) !important; font-variant-numeric: tabular-nums; }
+.big-btn { padding: 16px; font-size: 18px; }
+.sheet h3 { margin: 10px 0 0; font-size: 15px; }
+.theme-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.theme-pick button { padding: 14px 8px; display: grid; gap: 6px; justify-items: center; font-weight: 600; }
+.theme-pick button.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.theme-pick i { width: 100%; height: 34px; border-radius: 8px; display: block; }
+.theme-pick [data-pick=glass] i { background: radial-gradient(120% 120% at 0% 0%, #3b1f6b, transparent 60%), radial-gradient(100% 100% at 100% 100%, #0f4d63, transparent 60%), #0b0c14; }
+.theme-pick [data-pick=classic] i { background: #171b1f; border: 1px solid #262c32; }
+
+/* ---------- glass theme (default): always dark, frosted cards, purple→cyan gradients ---------- */
+:root[data-theme=glass] {
+  --bg: #0b0c14; --card: rgba(255,255,255,.06); --line: rgba(255,255,255,.13); --fg: #eef0ff; --muted: #a3a9c9;
+  --accent: #22d3ee; --good: #5eead4; --warn: #fbbf24; --bad: #fb7185; --fire: #ff9f43; --gold: #f5c542;
+  --grad: linear-gradient(135deg, #8b5cf6, #22d3ee); --r: 22px; color-scheme: dark;
+}
+[data-theme=glass] body {
+  background: radial-gradient(120% 55% at 0% 0%, #3b1f6b 0%, transparent 60%), radial-gradient(100% 45% at 100% 25%, #0f4d63 0%, transparent 60%), #0b0c14;
+  background-attachment: fixed;
+}
+[data-theme=glass] button { background: rgba(255,255,255,.07); border-color: var(--line); }
+[data-theme=glass] .top { background: rgba(11,12,20,.55); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); margin-inline: -16px; padding-inline: 16px; }
+[data-theme=glass] .tabs button { background: transparent; }
+[data-theme=glass] .tabs button.on { background: linear-gradient(90deg, #c4b5fd, #67e8f9); -webkit-background-clip: text; background-clip: text; color: transparent; box-shadow: none; }
+[data-theme=glass] .range { background: rgba(255,255,255,.06); }
+[data-theme=glass] .range button { background: transparent; }
+[data-theme=glass] .range button.on, [data-theme=glass] .primary, [data-theme=glass] .card-btn { background: var(--grad); color: #fff; box-shadow: 0 0 16px rgba(139,92,246,.45); }
+[data-theme=glass] .card-btn.live { background: linear-gradient(135deg, #f43f5e, #fb923c); box-shadow: 0 0 16px rgba(244,63,94,.5); }
+[data-theme=glass] .card, [data-theme=glass] .ex, [data-theme=glass] .unsaved {
+  background: linear-gradient(160deg, rgba(255,255,255,.085), rgba(255,255,255,.025));
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 8px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.12);
+}
+[data-theme=glass] .card { padding: 16px 18px; }
+[data-theme=glass] .unsaved { border-color: var(--warn); }
+[data-theme=glass] .card h2 { letter-spacing: .08em; }
+[data-theme=glass] .big { font-weight: 700; }
+[data-theme=glass] .chip { background: rgba(255,255,255,.07); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+[data-theme=glass] .quick button { border-radius: 16px; }
+[data-theme=glass] .quick button.live { border-color: #f43f5e; box-shadow: 0 0 14px rgba(244,63,94,.45); }
+[data-theme=glass] .sheet { background: #0d0e18; }
+[data-theme=glass] .sheet input, [data-theme=glass] .sheet select { background: rgba(255,255,255,.06); }
+[data-theme=glass] .toast { background: #eef0ff; color: #0b0c14; }
+[data-theme=glass] .chart rect.bar { filter: drop-shadow(0 0 3px rgba(34,211,238,.45)); transform-origin: bottom; transform-box: fill-box; animation: grow .6s cubic-bezier(.2,.8,.2,1) both; }
+[data-theme=glass] .cal-day.on { box-shadow: 0 0 10px rgba(255,159,67,.45); }
+[data-theme=glass] .timer { background: linear-gradient(90deg, #c4b5fd, #67e8f9); -webkit-background-clip: text; background-clip: text; color: transparent !important; }
+@keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { [data-theme=glass] .chart rect.bar { animation: none; } }

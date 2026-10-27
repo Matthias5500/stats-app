@@ -8,6 +8,7 @@ const HEADERS = {
   runs: 'date,time,km,minutes,feel,with,note',
   habits: 'date,time,habit,value',
   spend: 'date,time,eur,what,category',
+  piano: 'date,time,minutes,note',
 };
 
 const cell = (v) => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; };
@@ -134,7 +135,7 @@ function todayView() {
 window.renderToday = function () {
   const el = $('#today');
   if (!el || !DATA || !CFG.files) return;
-  const t = todayView(), items = staged(), wo = LS.get('workout', null), goal = CFG.proteinGoal;
+  const t = todayView(), items = staged(), wo = LS.get('workout', null), pt = LS.get('pianoTimer', null), goal = CFG.proteinGoal;
   const st = streakInfo(DATA.days, nowKey());
   el.innerHTML = `
     <div class="chips">
@@ -142,12 +143,14 @@ window.renderToday = function () {
       <span class="chip ${t.protein >= goal ? 'good' : ''}">🍽️ ${Math.round(t.protein || 0)}/${goal} g</span>
       <span class="chip ${t.floss ? 'good' : 'bad'}">🦷 ${t.floss ? '✓' : '✗'}</span>
       <span class="chip ${t.gym || t.run ? 'good' : ''}">${t.gym ? '🏋️ ✓' : '🏋️ –'} ${t.run ? '🏃 ✓' : '🏃 –'}</span>
+      ${F('piano') ? `<span class="chip ${t.piano ? 'good' : ''}">🎹 ${Math.round(t.piano || 0)} min</span>` : ''}
       <button class="chip" id="entries">↺ Undo…</button>
     </div>
     <div class="quick">
       <button id="q-floss" ${t.floss ? 'disabled' : ''}>🦷<span>${t.floss ? 'Flossed' : 'Floss'}</span></button>
       <button id="q-gym" class="${wo ? 'live' : ''}">🏋️<span>${wo ? 'Resume' : 'Gym'}</span></button>
       <button id="q-run">🏃<span>Run</span></button>
+      ${F('piano') ? `<button id="q-piano" class="${pt ? 'live' : ''}">🎹<span>${pt ? 'Playing' : 'Piano'}</span></button>` : ''}
       <button id="q-weight">⚖️<span>Weight</span></button>
       <button id="q-spend">💸<span>Spend</span></button>
       <button id="q-night">😴<span>Goodnight</span></button>
@@ -163,6 +166,7 @@ window.renderToday = function () {
   $('#q-floss').addEventListener('click', () => stage({ kind: 'habits', op: 'add', rows: [[nowKey(), clock(Date.now()), 'floss', '1']], label: 'floss', marks: { floss: true } }));
   $('#q-gym').addEventListener('click', openGym);
   $('#q-run').addEventListener('click', openRun);
+  $('#q-piano')?.addEventListener('click', openPiano);
   $('#q-weight').addEventListener('click', openWeight);
   $('#q-spend').addEventListener('click', openSpend);
   $('#q-night').addEventListener('click', openNight);
@@ -177,6 +181,7 @@ function openEntries() {
     ...pick(DATA.weightRows).map((r) => ({ kind: 'weight', match: r, label: `weight ${r.kg} kg` })),
     ...pick(DATA.runs).map((r) => ({ kind: 'runs', match: r, label: `run ${r.km} km`, marks: { run: false } })),
     ...pick(DATA.spendLog).map((r) => ({ kind: 'spend', match: r, label: `spend €${r.eur} ${r.what}` })),
+    ...pick(DATA.piano).map((r) => ({ kind: 'piano', match: r, label: `piano ${r.minutes} min`, marks: { piano: 0 } })),
     ...Object.values(Object.groupBy ? Object.groupBy(pick(DATA.gym), (r) => r.date + ' ' + r.time) : pick(DATA.gym).reduce((m, r) => ((m[r.date + ' ' + r.time] ||= []).push(r), m), {}))
       .map((rows) => ({ kind: 'gym', match: { date: rows[0].date, time: rows[0].time }, label: `gym ${rows[0].workout} · ${rows.length} sets`, marks: { gym: false } })),
   ].map((e) => ({ ...e, day: e.match.date, time: e.match.time || '' })).sort((a, b) => (b.day + b.time).localeCompare(a.day + a.time));
@@ -257,6 +262,61 @@ function openSpend() {
     });
   });
 }
+
+// ---------- piano: start/stop timer, or add minutes by hand ----------
+const pianoRow = (start, minutes, note) => {
+  const m = Math.max(1, Math.round(minutes)), d = dayKey(start);
+  stage({ kind: 'piano', op: 'add', rows: [[d, clock(start), m, note]], label: `piano ${m} min${note ? ' ' + note : ''}`,
+    marks: d === nowKey() ? { piano: (todayView().piano || 0) + m } : {} });
+};
+let pianoTick;
+function openPiano() {
+  clearInterval(pianoTick);
+  const pt = LS.get('pianoTimer', null);
+  if (pt) {
+    const el = () => sheet().querySelector('#p-clock');
+    const tick = () => { const s = Math.floor((Date.now() - pt.start) / 1000); if (el()) el().textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; else clearInterval(pianoTick); };
+    openSheet('Playing 🎹', `
+      <p class="timer" id="p-clock">0:00</p>
+      <p class="sub">since ${clock(pt.start)}</p>
+      <label for="p-note">What did you play?</label><input id="p-note" type="text" placeholder="optional, e.g. Unravel">
+      <button class="primary" id="p-stop">■ Stop + log</button>
+      <button id="p-discard" class="ghost">Discard timer</button>`, (r) => {
+      tick(); pianoTick = setInterval(tick, 1000);
+      r.querySelector('#p-stop').addEventListener('click', () => {
+        LS.remove('pianoTimer'); clearInterval(pianoTick);
+        pianoRow(pt.start, (Date.now() - pt.start) / 60e3, r.querySelector('#p-note').value.trim());
+        closeSheet(); render();
+      });
+      const disc = r.querySelector('#p-discard');
+      disc.addEventListener('click', () => {
+        if (disc.dataset.sure) { LS.remove('pianoTimer'); clearInterval(pianoTick); closeSheet(); render(); return; }
+        disc.dataset.sure = '1'; disc.textContent = 'Tap again to throw this session away';
+      });
+    });
+    return;
+  }
+  openSheet('Piano 🎹', `
+    <button class="primary big-btn" id="p-start">▶ Start timer</button>
+    <p class="sub">Keeps running when you close the app. Tap 🎹 again to stop.</p>
+    <h3>Or add it by hand</h3>
+    ${stepper('p-min', 30, 5, 'min')}
+    <label for="p-mnote">What did you play?</label><input id="p-mnote" type="text" placeholder="optional">
+    <label for="p-date">Day</label><input id="p-date" type="date" value="${nowKey()}">
+    <button id="p-add">Add</button>`, (r) => {
+    wireSteppers(r);
+    r.querySelector('#p-start').addEventListener('click', () => { LS.set('pianoTimer', { start: Date.now() }); closeSheet(); render(); toast('Timer running 🎹 have fun'); });
+    r.querySelector('#p-add').addEventListener('click', () => {
+      const m = Number(r.querySelector('#p-min').value);
+      if (!m) { toast('How many minutes?'); return; }
+      const d = r.querySelector('#p-date').value || nowKey();
+      // a past day gets noon as its time; today gets now
+      pianoRow(d === nowKey() ? Date.now() : Date.parse(d + 'T12:00:00Z'), m, r.querySelector('#p-mnote').value.trim());
+      closeSheet();
+    });
+  });
+}
+window.openPiano = openPiano;
 
 // ---------- goodnight ----------
 function openNight() {

@@ -8,9 +8,18 @@ const LS = {
   remove(k) { try { localStorage.removeItem('stats.' + k); } catch { /* ignore */ } },
 };
 
+// ---------- theme (glass = default, classic = the original look; picked in ⚙) ----------
+const THEME_COLOR = { glass: '#0b0c14', classic: '#0e1113' };
+const theme = () => LS.get('theme', 'glass');
+function applyTheme() {
+  document.documentElement.dataset.theme = theme();
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', THEME_COLOR[theme()] || THEME_COLOR.glass);
+}
+applyTheme();
+
 const H = 3600e3;
 let CFG = {}; // loaded from stats.json in the data repo
-const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, FLOSS_START = () => CFG.flossStart || '0000';
+const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000';
 const F = (k) => CFG.files[k];
 
 // ---------- dates ----------
@@ -140,10 +149,10 @@ async function load(range) {
   const logFiles = listing.filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f.name));
   const timeNames = names.filter((n) => /^time-.*\.csv$/.test(n) && F('logDir') + '/' + n !== F('timeTags'));
 
-  const [ratings, food, tags, deadlineText, money, tx, weightText, gymText, runText, habitText, spendText, ...rest] = await Promise.all([
+  const [ratings, food, tags, deadlineText, money, tx, weightText, gymText, runText, habitText, spendText, pianoText, ...rest] = await Promise.all([
     gh(F('ratings')), gh(F('food')), gh(F('timeTags')),
     gh(F('deadlines')), gh(F('money')), gh(F('transactions')),
-    gh(F('weight')), gh(F('gym')), gh(F('runs')), gh(F('habits')), gh(F('spend')),
+    gh(F('weight')), gh(F('gym')), gh(F('runs')), gh(F('habits')), gh(F('spend')), F('piano') ? gh(F('piano')) : null,
     ...timeNames.map((n) => gh(F('logDir') + '/' + n)),
   ]);
   const timeFiles = rest;
@@ -173,6 +182,8 @@ async function load(range) {
   const gym = csv(gymText), runs = csv(runText);
   for (const r of gym) day(r.date).gym = true;
   for (const r of runs) day(r.date).run = true;
+  const piano = csv(pianoText);
+  for (const r of piano) day(r.date).piano = (day(r.date).piano || 0) + (Number(r.minutes) || 0);
   const habits = csv(habitText), spendLog = csv(spendText);
   for (const r of habits) {
     if (r.habit === 'floss') day(r.date).floss = true;
@@ -197,22 +208,27 @@ async function load(range) {
   }
   for (const r of spendLog) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
 
-  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, habits, spendLog, weightRows, cfg: CFG, fetched: Date.now() };
+  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, weightRows, cfg: CFG, fetched: Date.now() };
 }
 
 // ---------- tiny charts ----------
+// glass theme: the flat colours become gradients (+ a glow from style.css)
+const GLASS_PAINT = { 'var(--accent)': 'url(#g-accent)', 'var(--good)': 'url(#g-good)', 'var(--warn)': 'url(#g-warn)', 'var(--bad)': 'url(#g-bad)' };
+const GLASS_DEFS = `<defs>${[['accent', '#22d3ee', '#8b5cf6'], ['good', '#5eead4', '#22d3ee'], ['warn', '#fde68a', '#f59e0b'], ['bad', '#fda4af', '#f43f5e']]
+  .map(([id, a, b]) => `<linearGradient id="g-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient>`).join('')}</defs>`;
 function bars(values, { max, min = 0, ref, cls, hollow } = {}) {
   const W = 300, Hh = 60, n = values.length, top = max ?? Math.max(1, ...values.filter((v) => v != null), ref || 0);
   const bw = W / n, y = (v) => Hh - ((v - min) / (top - min)) * (Hh - 4);
-  let s = `<svg class="chart" viewBox="0 0 ${W} ${Hh + 10}" preserveAspectRatio="none" role="img">`;
+  const glass = theme() === 'glass', paint = (c) => (glass && GLASS_PAINT[c]) || c, rx = glass ? Math.min(4, bw * 0.3) : 2;
+  let s = `<svg class="chart" viewBox="0 0 ${W} ${Hh + 10}" preserveAspectRatio="none" role="img">${glass ? GLASS_DEFS : ''}`;
   values.forEach((v, i) => {
     const x = i * bw + bw * 0.15, w = Math.max(1, bw * 0.7);
     s += `<rect data-i="${i}" x="${i * bw}" y="0" width="${bw}" height="${Hh}" fill="transparent"/>`;
     if (v == null) { s += `<rect x="${x}" y="${Hh - 1}" width="${w}" height="1" fill="var(--line)"/>`; return; }
     const c = cls ? cls(v, i) : 'var(--accent)', yy = Math.min(y(v), Hh - 2);
     s += hollow && hollow(i)
-      ? `<rect pointer-events="none" x="${x + .75}" y="${yy}" width="${w - 1.5}" height="${Hh - yy}" rx="2" fill="none" stroke="${c}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`
-      : `<rect pointer-events="none" x="${x}" y="${yy}" width="${w}" height="${Hh - yy}" rx="2" fill="${c}"/>`;
+      ? `<rect pointer-events="none" x="${x + .75}" y="${yy}" width="${w - 1.5}" height="${Hh - yy}" rx="${rx}" fill="none" stroke="${c}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`
+      : `<rect class="bar" style="animation-delay:${Math.min(i, 30) * 25}ms" pointer-events="none" x="${x}" y="${yy}" width="${w}" height="${Hh - yy}" rx="${rx}" fill="${paint(c)}"/>`;
   });
   if (ref != null) s += `<line x1="0" x2="${W}" y1="${y(ref)}" y2="${y(ref)}" stroke="var(--muted)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>`;
   return s + '</svg>';
@@ -306,15 +322,41 @@ const CARDS = [
       chart: bars(m),
       tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${((d.study || 0) / 60).toFixed(1)} h study · ${Math.round(d.chat || 0)} min chat`; } };
   } },
-  { id: 'food', title: 'Protein + kcal', render(x) {
+  { id: 'piano', title: 'Piano', render(x) {
+    const m = x.dates.map((k) => x.days[k]?.piano || null);
+    const played = m.filter(Boolean), tot = sum(played), prev = sum(x.prev.map((k) => x.days[k]?.piano || 0));
+    const last = [...(x.piano || [])].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)).pop();
+    const live = LS.get('pianoTimer', null);
+    return { big: String(Math.round(tot)), unit: 'min',
+      sub: `${played.length}/${x.dates.length} days played` + (x.prev.length ? ` · <span class="${tot >= prev ? 'good' : 'bad'}">${tot >= prev ? '+' : '−'}${Math.round(Math.abs(tot - prev))} min vs before</span>` : '')
+        + (last ? ` · last ${short(last.date)}` : ''),
+      head: `<button class="card-btn${live ? ' live' : ''}" data-piano>${live ? '■ Stop' : '▶ Start'}</button>`,
+      chart: bars(m),
+      tap: (i) => { const k = x.dates[i], rows = (x.piano || []).filter((r) => r.date === k);
+        return rows.length ? `${short(k)}: ${Math.round(x.days[k].piano)} min` + (rows.some((r) => r.note) ? ' · ' + rows.map((r) => r.note).filter(Boolean).join(', ') : '') : `${short(k)}: didn’t play`; },
+      wire(el) { el.querySelector('[data-piano]').addEventListener('click', () => window.openPiano?.()); } };
+  } },
+  { id: 'protein', title: 'Protein', render(x) {
     const pr = x.dates.map((k) => (x.days[k]?.meals ? Math.round(x.days[k].protein) : null));
     const logged = x.dates.filter((k) => x.days[k]?.meals);
-    const ap = avg(logged.map((k) => x.days[k].protein)), ak = avg(logged.map((k) => x.days[k].kcal));
+    const ap = avg(logged.map((k) => x.days[k].protein));
     const hit = logged.filter((k) => x.days[k].protein >= PROTEIN_GOAL()).length;
-    return { big: ap == null ? '—' : `<span class="${ap >= PROTEIN_GOAL() ? 'good' : 'warn'}">${Math.round(ap)}</span>`, unit: `g protein avg`,
-      sub: ak == null ? 'nothing logged' : `${Math.round(ak).toLocaleString('en')} kcal avg · ${hit}/${logged.length} days ≥ ${PROTEIN_GOAL()} g`,
+    return { big: ap == null ? '—' : `<span class="${ap >= PROTEIN_GOAL() ? 'good' : 'warn'}">${Math.round(ap)}</span>`, unit: 'g avg',
+      sub: ap == null ? 'nothing logged' : `goal ${PROTEIN_GOAL()} g · ${hit}/${logged.length} days hit`,
       chart: bars(pr, { ref: PROTEIN_GOAL(), cls: (v) => (v >= PROTEIN_GOAL() ? 'var(--good)' : 'var(--accent)') }),
-      tap: (i) => { const d = x.days[x.dates[i]]; return d?.meals ? `${short(x.dates[i])}: ${Math.round(d.protein)} g protein · ${Math.round(d.kcal).toLocaleString('en')} kcal · ${d.meals} items` : `${short(x.dates[i])}: nothing logged`; } };
+      tap: (i) => { const d = x.days[x.dates[i]]; return d?.meals ? `${short(x.dates[i])}: ${Math.round(d.protein)} g protein · ${d.meals} items` : `${short(x.dates[i])}: nothing logged`; } };
+  } },
+  { id: 'kcal', title: 'Calories', render(x) {
+    const kc = x.dates.map((k) => (x.days[k]?.meals ? Math.round(x.days[k].kcal) : null));
+    const logged = x.dates.filter((k) => x.days[k]?.meals);
+    const ak = avg(logged.map((k) => x.days[k].kcal)), goal = KCAL_GOAL();
+    // within ±10 % of the target = on target; over = warn, under = plain
+    const near = (v) => goal && Math.abs(v - goal) <= goal * 0.1;
+    const on = logged.filter((k) => near(x.days[k].kcal)).length;
+    return { big: ak == null ? '—' : `<span class="${!goal ? '' : near(ak) ? 'good' : 'warn'}">${Math.round(ak).toLocaleString('en')}</span>`, unit: 'kcal avg',
+      sub: ak == null ? 'nothing logged' : goal ? `target ${goal.toLocaleString('en')} · ${on}/${logged.length} days within ±10 %` : `${logged.length} days logged`,
+      chart: bars(kc, { ref: goal, cls: (v) => (!goal ? 'var(--accent)' : near(v) ? 'var(--good)' : v > goal ? 'var(--warn)' : 'var(--accent)') }),
+      tap: (i) => { const d = x.days[x.dates[i]]; return d?.meals ? `${short(x.dates[i])}: ${Math.round(d.kcal).toLocaleString('en')} kcal · ${d.meals} items` : `${short(x.dates[i])}: nothing logged`; } };
   } },
   { id: 'floss', title: 'Floss', render(x) {
     const ds = x.dates.filter((k) => k >= FLOSS_START() && k < x.today);
@@ -437,8 +479,13 @@ let range = LS.get('range', 7);
 const $ = (s) => document.querySelector(s);
 
 function order() {
-  const saved = LS.get('order', []);
-  return [...saved.filter((id) => CARDS.some((c) => c.id === id)), ...CARDS.map((c) => c.id).filter((id) => !saved.includes(id))];
+  const saved = LS.get('order', []).flatMap((id) => (id === 'food' ? ['protein', 'kcal'] : [id])).filter((id) => CARDS.some((c) => c.id === id));
+  CARDS.forEach((c, i) => {
+    if (saved.includes(c.id)) return;
+    const before = CARDS.slice(0, i).map((p) => p.id).filter((id) => saved.includes(id)).pop();
+    saved.splice(before ? saved.indexOf(before) + 1 : 0, 0, c.id);
+  });
+  return [...new Set(saved)];
 }
 const hidden = () => new Set(LS.get('hidden', []));
 
@@ -460,7 +507,7 @@ function render() {
     try { r = def.render(ctx); } catch (e) { r = { big: '—', sub: 'couldn’t read this one: ' + esc(e.message) }; }
     const el = document.createElement('article');
     el.className = 'card';
-    el.innerHTML = `<h2>${def.title}</h2><div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.chart || ''}${r.html || ''}${r.tap ? '<div class="detail"></div>' : ''}`;
+    el.innerHTML = `${r.head ? `<div class="card-head"><h2>${def.title}</h2>${r.head}</div>` : `<h2>${def.title}</h2>`}<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.chart || ''}${r.html || ''}${r.tap ? '<div class="detail"></div>' : ''}`;
     if (r.tap) {
       const det = el.querySelector('.detail');
       const lastI = dates.length - 1;
@@ -517,7 +564,13 @@ function drawList() {
     ul.appendChild(li);
   });
 }
-$('#open-settings').addEventListener('click', () => { drawList(); $('#settings').hidden = false; });
+function drawThemes() {
+  document.querySelectorAll('#theme-pick button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.pick === theme());
+    b.onclick = () => { LS.set('theme', b.dataset.pick); applyTheme(); drawThemes(); render(); };
+  });
+}
+$('#open-settings').addEventListener('click', () => { drawList(); drawThemes(); $('#settings').hidden = false; });
 $('#close-settings').addEventListener('click', () => { $('#settings').hidden = true; render(); });
 
 DATA = LS.get('last', null);
