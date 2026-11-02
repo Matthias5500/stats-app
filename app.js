@@ -259,7 +259,7 @@ function bars(values, { max, min = 0, ref, cls, hollow } = {}) {
 
 // ---------- gym: one session per day, duration, weekly minutes, per-exercise progress ----------
 // Duration: the app writes "session N min" into the note of a workout's first row (gym-log.csv header unchanged).
-// Rows from before 2026-11-02 (or typed in by hand) have no duration → shown as "time unknown".
+// Rows from before 2026-11-02 (or typed in by hand) have no duration → shown as "— min (not tracked yet)".
 const DUR_RE = /\bsession (\d+) min\b/;
 const dm = (key) => new Date(key + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const monOf = (k) => addDays(k, -((new Date(k + 'T12:00:00Z').getUTCDay() + 6) % 7));
@@ -297,6 +297,48 @@ function weekBars(weeks, sessions) {
     tap: (i) => { const w = weeks[Math.min(i, weeks.length - 1)];
       return `Week of ${dm(w.mon)}: ${w.n ? `${w.n} session${w.n === 1 ? '' : 's'} · ${w.sets} sets · ${w.mins ? w.mins + ' min' : ''}${w.unknown ? `${w.mins ? ' + ' : ''}${w.unknown} untimed` : ''}` : 'no gym'}`; } };
 }
+// muscle groups: exact names first (his own spellings), then keywords for new exercises, else "Other"
+const MUSCLES = ['Chest', 'Shoulders', 'Triceps', 'Back', 'Biceps', 'Legs', 'Core', 'Other'];
+const MUSCLE_OF = {
+  'Schrägbank': 'Chest', 'Chest fly': 'Chest', 'Bench / chest press': 'Chest',
+  'Shoulder press': 'Shoulders', 'Seithebemaschiene': 'Shoulders', 'Lateral raise machine': 'Shoulders', 'Overhead press (DB)': 'Shoulders',
+  'Cheat press down machine?': 'Triceps',
+  'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back', 'Lat pulldown': 'Back',
+  'Preacher curls': 'Biceps',
+  'Squat / leg press': 'Legs', 'Leg press': 'Legs', 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs', 'Romanian deadlift': 'Legs',
+  'Decline weighted situps': 'Core', 'Back extensions': 'Core', 'Plank (seconds)': 'Core', 'Hanging knee raises': 'Core',
+};
+const MUSCLE_RULES = [ // order matters: "leg curl" is legs, "back extension" is core
+  ['Legs', /leg|squat|calf|wade|adduct|abduct|lunge|ausfallschritt|deadlift|kreuzheben|glute|hip thrust|kniebeug|beinpress|beinstreck|beinbeug|step.?up/],
+  ['Core', /sit.?up|crunch|plank|knee raise|leg raise|back ext|hyperext|r(u|ue)ckenstreck|bauch|\babs?\b|core|russian twist|woodchop/],
+  ['Triceps', /tri[cz]eps|press.?down|push.?down|skull|dips?\b|french press|kickback/],
+  ['Biceps', /bi[cz]eps|curl|hammer/],
+  ['Back', /row|rudern|pull.?down|pull.?up|klimmz|chin.?up|\blat\b|latzug|back|r(u|ue)cken|shrug|face pull/],
+  ['Shoulders', /shoulder|schulter|lateral|seitheb|overhead|military|arnold|delt|reverse fly|front raise/],
+  ['Chest', /chest|brust|bench|bankdr|schr(a|ae)gbank|fly|flies|butterfly|push.?up|liegest|pec/],
+];
+function muscleOf(name) {
+  if (MUSCLE_OF[name]) return MUSCLE_OF[name];
+  const t = name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return (MUSCLE_RULES.find(([, re]) => re.test(t)) || ['Other'])[0];
+}
+// sets per muscle group: last 7 days vs. the weekly average of the 4 weeks before
+function muscleSets(sessions, today) {
+  const out = Object.fromEntries(MUSCLES.map((m) => [m, { now: 0, before: 0 }]));
+  const from = addDays(today, -6), from4 = addDays(today, -34);
+  for (const s of sessions) for (const e of s.exercises) {
+    const g = out[muscleOf(e.name)];
+    if (s.date >= from && s.date <= today) g.now += e.sets.length;
+    else if (s.date >= from4 && s.date < from) g.before += e.sets.length / 4;
+  }
+  return out;
+}
+function muscleBars(ms) {
+  const rows = MUSCLES.filter((m) => m !== 'Other' || ms.Other.now || ms.Other.before), max = Math.max(1, ...rows.map((m) => Math.max(ms[m].now, ms[m].before)));
+  return `<div class="mbars">${rows.map((m) => { const { now, before } = ms[m];
+    return `<div class="mbar"><span>${m}</span><div class="mtrack"><i class="${now ? '' : 'zero'}" style="width:${(now / max) * 100}%"></i>${before ? `<b title="4-week avg" style="left:${(before / max) * 100}%"></b>` : ''}</div><em class="${now ? '' : 'bad'}">${now}</em></div>`; }).join('')}</div>`;
+}
+let gymSel = null; // exercise shown in the progress chart (kept across re-renders)
 const isAssist = (name) => /assist/i.test(name) || !!(typeof planItem === 'function' && planItem(name)?.assist);
 // best set per session: heaviest (assist: least help); bodyweight-only exercises → most reps
 function progressOf(name, sessions) {
@@ -325,9 +367,9 @@ function lineChart(pts, unit) {
 }
 const setsText = (sets) => (sets.every((x) => !x.kg) ? sets.map((x) => x.reps).join(' · ') + ' reps' : sets.map((x) => `${x.reps} × ${kg(x.kg)}`).join(' · ') + ' kg');
 function sessionCard(s) {
-  return `<article class="gcard"><div class="gcard-h"><b>${short(s.date)}</b><span>${[s.start && esc(s.start), s.mins != null ? `⏱ ${s.mins} min` : 'time unknown', s.types.filter((t) => t !== 'free').map(esc).join('+')].filter(Boolean).join(' · ')}</span></div>
+  return `<article class="gcard"><div class="gcard-h"><b>${short(s.date)}</b><span>${[s.start && esc(s.start), s.mins != null ? `⏱ ${s.mins} min` : '⏱ — min (not tracked yet)', s.types.filter((t) => t !== 'free').map(esc).join('+')].filter(Boolean).join(' · ')}</span></div>
     <ul>${s.exercises.map((e) => { const notes = [...new Set(e.sets.map((x) => x.note).filter(Boolean))];
-      return `<li><span>${esc(e.name)}</span><span>${setsText(e.sets)}</span>${notes.length ? `<small>${notes.map(esc).join(' · ')}</small>` : ''}</li>`; }).join('')}</ul>
+      return `<li><span>${esc(e.name)} <small class="mtag">${muscleOf(e.name)}</small></span><span>${setsText(e.sets)}</span>${notes.length ? `<small>${notes.map(esc).join(' · ')}</small>` : ''}</li>`; }).join('')}</ul>
     <div class="sub">${s.exercises.length} exercise${s.exercises.length === 1 ? '' : 's'} · ${s.sets} sets</div></article>`;
 }
 
@@ -485,25 +527,37 @@ const CARDS = [
       chart: bars(x.dates.map((k) => ((x.days[k]?.gym ? 1 : 0) + (x.days[k]?.run ? 1 : 0)) || null), { max: 2 }),
       tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${[d.gym && 'gym', d.run && 'run'].filter(Boolean).join(' + ') || 'rest'}`; } };
   } },
-  { id: 'gym', title: 'Gym', render(x) {
+  // full section right in the stats view (always a full-width card, never a tile / behind a tap)
+  { id: 'gym', title: 'Gym', inline: true, render(x) {
     const all = gymSessions(x.gym), inR = all.filter((s) => s.date >= x.dates[0] && s.date <= x.today), last = all[0];
-    const wb = weekBars(gymWeeks(all, x.today, 8), all);
+    const wb = weekBars(gymWeeks(all, x.today, 8), all), ms = muscleSets(all, x.today);
+    const neglected = MUSCLES.filter((m) => m !== 'Other' && !ms[m].now);
+    const names = gymRecent(), byGroup = MUSCLES.map((m) => [m, names.filter((n) => muscleOf(n) === m)]).filter(([, l]) => l.length);
+    const showN = 3;
     return { big: String(inR.length), unit: inR.length === 1 ? 'session' : 'sessions',
-      sub: (last ? `last ${short(last.date)} · ${last.exercises.length} exercises${last.mins != null ? ` · ${last.mins} min` : ''}` : 'no gym logged yet')
-        + ` · bars = ${wb.timed ? 'minutes' : 'sets'} per week${wb.timed && all.some((s) => s.mins == null) ? ` (hollow = untimed, ~${wb.med} min each)` : ''}`,
-      chart: wb.chart, tap: wb.tap,
+      sub: last ? `last ${short(last.date)} · ${last.exercises.length} exercises${last.mins != null ? ` · ${last.mins} min` : ''}` : 'no gym logged yet',
+      html: `${h3(`${wb.timed ? 'Minutes' : 'Sets'} per week`)}<p class="sub">last 8 weeks${wb.timed && all.some((s) => s.mins == null) ? ` · hollow = not timed, counted as ~${wb.med} min` : wb.timed ? '' : ' · minutes show up once workouts are timed'}</p>${wb.chart}<div class="detail gw-detail"></div>
+        ${h3('Sets per muscle group')}<p class="sub">last 7 days · tick = weekly average of the 4 weeks before${neglected.length ? ` · <span class="bad">0 sets: ${neglected.join(', ')}</span>` : ''}</p>${muscleBars(ms)}
+        ${h3('Progress per exercise')}
+        ${names.length ? `<select class="gp-sel" aria-label="Exercise">${byGroup.map(([m, l]) => `<optgroup label="${m}">${l.map((n) => `<option>${esc(n)}</option>`).join('')}</optgroup>`).join('')}</select><div class="gp-chart"></div>` : '<p class="sub">Log a workout first.</p>'}
+        ${h3(`History · ${all.length} session${all.length === 1 ? '' : 's'}`)}
+        ${all.length ? `<div class="gcards">${all.slice(0, 60).map((s, i) => (i < showN ? sessionCard(s) : sessionCard(s).replace('<article class="gcard"', '<article class="gcard" hidden'))).join('')}</div>
+          ${all.length > showN ? `<button class="gmore">Show all ${all.length} sessions</button>` : ''}` : '<p class="sub">Nothing logged yet.</p>'}`,
       wire(el) {
-        const pk = el.querySelector('#gp-pick'), out = el.querySelector('#gp-chart');
-        if (!pk) return;
+        const det = el.querySelector('.gw-detail'), svg = el.querySelector('svg.chart');
+        if (det) { det.textContent = wb.tap(99); svg?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = wb.tap(Number(i)); }); }
+        el.querySelector('.gmore')?.addEventListener('click', (ev) => { el.querySelectorAll('.gcard[hidden]').forEach((c) => (c.hidden = false)); ev.target.remove(); });
+        const sel = el.querySelector('.gp-sel'), out = el.querySelector('.gp-chart');
+        if (!sel) return;
         const show = (name) => {
           const pts = progressOf(name, all), bw = pts.length && pts[0].bw, first = pts[0], lastP = pts[pts.length - 1];
           const delta = pts.length > 1 ? lastP.v - first.v : 0, better = isAssist(name) ? delta < 0 : delta > 0;
-          out.innerHTML = `<p class="gp-name"><b>${esc(name)}</b> · ${bw ? 'most reps' : isAssist(name) ? 'least assist (lower = better)' : 'top set'} per session</p>${lineChart(pts, bw ? 'reps' : 'kg')}`
+          out.innerHTML = `<p class="sub">${muscleOf(name)} · ${bw ? 'most reps' : isAssist(name) ? 'least assist (lower = better)' : 'top set'} per session</p>${lineChart(pts, bw ? 'reps' : 'kg')}`
             + (pts.length ? `<p class="sub">${pts.length} session${pts.length === 1 ? '' : 's'} · now ${bw ? lastP.v + ' reps' : `${lastP.reps} × ${kg(lastP.v)} kg`}${pts.length > 1 ? ` · <span class="${delta === 0 ? '' : better ? 'good' : 'warn'}">${delta === 0 ? '±0' : sign(delta, delta % 1 ? 1 : 0)} ${bw ? 'reps' : 'kg'} since ${dm(first.date)}</span>` : ''}</p>` : '');
         };
-        const pick = (name) => { show(name); exPicker(pk, { onPick: pick, allowNew: false, current: name, compact: true }); };
-        const first = gymRecent()[0];
-        if (first) pick(first); else out.innerHTML = '<p class="sub">Log a workout first.</p>';
+        sel.value = gymSel && names.includes(gymSel) ? gymSel : names[0];
+        sel.addEventListener('change', () => { gymSel = sel.value; show(sel.value); });
+        show(sel.value);
       } };
   } },
   { id: 'sleep', title: 'Asleep at', render(x) {
@@ -677,7 +731,7 @@ const run = (def, ctx) => { try { return def.render(ctx); } catch (e) { return {
 
 function fullCard(def, r, ctx) {
   const el = document.createElement('article');
-  el.className = 'card';
+  el.className = 'card' + (def.inline ? ' inline' : '');
   el.innerHTML = `${r.head ? `<div class="card-head"><h2>${def.title}</h2>${r.head}</div>` : `<h2>${def.title}</h2>`}<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.chart || ''}${r.html || ''}${r.tap ? '<div class="detail"></div>' : ''}`;
   if (r.tap) {
     const det = el.querySelector('.detail');
@@ -686,7 +740,7 @@ function fullCard(def, r, ctx) {
   }
   r.wire?.(el);
   // tapping the card itself (not its chart, calendar or buttons) opens the details
-  el.addEventListener('click', (ev) => { if (!ev.target.closest('button, svg, input, a')) openDetail(def.id); });
+  if (!def.inline) el.addEventListener('click', (ev) => { if (!ev.target.closest('button, svg, input, a, select')) openDetail(def.id); });
   return el;
 }
 
@@ -708,7 +762,7 @@ function render() {
   let grid = null;
   for (const id of ids) {
     const def = CARDS.find((c) => c.id === id), r = run(def, ctx);
-    if (mode === 'full' || mode === 'sections' || (mode === 'tiles' && big.has(id))) { grid = null; root.appendChild(fullCard(def, r, ctx)); continue; }
+    if (mode === 'full' || mode === 'sections' || def.inline || (mode === 'tiles' && big.has(id))) { grid = null; root.appendChild(fullCard(def, r, ctx)); continue; }
     const el = document.createElement('article');
     if (mode === 'tiles') {
       if (!grid) { grid = document.createElement('div'); grid.className = 'tiles'; root.appendChild(grid); }
@@ -752,11 +806,6 @@ const back = (x) => [...x.dates].reverse();
 const DETAILS = {
   protein: (x) => foodDetail(x, 'protein_g', 'g') + h3(`Days ≥ ${PROTEIN_GOAL()} g`) + listHtml(back(x).filter((k) => x.days[k]?.meals).map((k) => [short(k), `${Math.round(x.days[k].protein)} g`, x.days[k].protein >= PROTEIN_GOAL() ? 'good' : 'warn'])),
   kcal: (x) => foodDetail(x, 'kcal', 'kcal'),
-  gym: (x) => {
-    const all = gymSessions(x.gym);
-    return h3('Progress per exercise') + '<div id="gp-chart" class="gp-chart"></div><div id="gp-pick"></div>'
-      + h3(`History · ${all.length} session${all.length === 1 ? '' : 's'}`) + (all.length ? `<div class="gcards">${all.slice(0, 60).map(sessionCard).join('')}</div>` : '<p class="sub">Nothing logged yet.</p>');
-  },
   piano: (x) => {
     const rows = inRange(x, x.piano || []).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
     if (!rows.length) return '<p class="sub">No piano in this range yet. ▶ Start next time you sit down.</p>';

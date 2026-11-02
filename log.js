@@ -460,30 +460,33 @@ function fmtLast(info, withDate = true) {
   return (withDate ? `last time (${dm(info.date)}): ` : '') + groups.map((g) => `${g.reps.join('/')} @ ${kg(g.kg)}`).join(' · ') + ' kg';
 }
 const fold = (t) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ß/g, 'ss');
-// el: container · skip: names to leave out · onPick(name) · allowNew: offer "add as new" · current: highlighted · compact: smaller buttons, no date
-function exPicker(el, { skip = [], onPick, allowNew = true, current = null, compact = false, n = 8 }) {
+// el: container · skip: names to leave out · onPick(name) · allowNew: offer "add as new"
+// layout: recent ones (big buttons) → search → every exercise under its muscle group (tap a group to open it)
+function exPicker(el, { skip = [], onPick, allowNew = true, n = 8 }) {
   const names = allExercises().filter((x) => !skip.includes(x));
-  const btn = (name) => { const info = lastInfo(name);
-    return `<button type="button" class="exp-b${name === current ? ' on' : ''}" data-ex="${esc(name)}"><b>${esc(name)}</b><small>${info ? `${dm(info.date)} · ${fmtLast(info, false)}` : 'never logged'}</small></button>`; };
-  el.innerHTML = `<div class="exp${compact ? ' compact' : ''}"><div class="exp-grid exp-recent">${names.slice(0, n).map(btn).join('')}</div>
+  const btn = (name, small) => { const info = lastInfo(name);
+    return `<button type="button" class="exp-b${small ? ' sm' : ''}" data-ex="${esc(name)}"><b>${esc(name)}</b><small>${info ? `${dm(info.date)} · ${fmtLast(info, false)}` : 'never logged'}</small></button>`; };
+  const groups = MUSCLES.map((m) => [m, names.filter((x) => muscleOf(x) === m)]).filter(([, l]) => l.length);
+  el.innerHTML = `<div class="exp"><div class="exp-grid exp-recent">${names.slice(0, n).map((x) => btn(x)).join('')}</div>
     <input type="search" class="exp-q" placeholder="${allowNew ? 'Search all, or type a new one…' : 'Search all exercises…'}" autocomplete="off" enterkeyhint="done">
-    <div class="exp-grid exp-res"></div></div>`;
-  const q = el.querySelector('.exp-q'), res = el.querySelector('.exp-res'), rec = el.querySelector('.exp-recent');
+    <div class="exp-grid exp-res"></div>
+    <div class="exp-groups">${groups.map(([m, l]) => `<details class="exp-g"><summary>${m} <small>${l.length}</small></summary><div class="exp-grid">${l.map((x) => btn(x, true)).join('')}</div></details>`).join('')}</div></div>`;
+  const q = el.querySelector('.exp-q'), res = el.querySelector('.exp-res'), rec = el.querySelector('.exp-recent'), grp = el.querySelector('.exp-groups');
   const wire = (root) => root.querySelectorAll('[data-ex]').forEach((b) => b.addEventListener('click', () => onPick(b.dataset.ex)));
   const draw = () => {
     const t = fold(q.value.trim());
-    rec.hidden = !!t;
+    rec.hidden = grp.hidden = !!t;
     if (!t) { res.innerHTML = ''; return; }
-    const hits = names.filter((x) => fold(x).includes(t));
+    const hits = names.filter((x) => fold(x).includes(t) || fold(muscleOf(x)).includes(t));
     const exact = allExercises().some((x) => fold(x) === t);
-    res.innerHTML = hits.map(btn).join('') + (allowNew && !exact ? `<button type="button" class="exp-b exp-new" data-new="1"><b>＋ Add “${esc(q.value.trim())}”</b><small>new exercise</small></button>` : '')
+    res.innerHTML = hits.map((x) => btn(x)).join('') + (allowNew && !exact ? `<button type="button" class="exp-b exp-new" data-new="1"><b>＋ Add “${esc(q.value.trim())}”</b><small>new exercise · ${muscleOf(q.value.trim())}</small></button>` : '')
       + (!hits.length && !allowNew ? '<p class="sub">No match.</p>' : '');
     wire(res);
     res.querySelector('[data-new]')?.addEventListener('click', () => onPick(q.value.trim()));
   };
   q.addEventListener('input', draw);
   q.addEventListener('keydown', (e) => { if (e.key !== 'Enter') return; e.preventDefault(); const b = res.querySelector('button'); b?.click(); });
-  wire(rec);
+  wire(rec); wire(grp);
 }
 window.exPicker = exPicker; window.gymRecent = gymRecent;
 
@@ -494,8 +497,7 @@ function openGym() {
       <p>Which workout?</p>
       <div class="pick"><button data-w="A">A</button><button data-w="B">B</button><button data-w="free">Free</button></div>
       <p class="sub">A: ${planOf('A').map((p) => esc(p.name)).join(' · ')}<br>B: ${planOf('B').map((p) => esc(p.name)).join(' · ')}</p>
-      <button id="g-hist">📈 History + progress</button>`, (r) => {
-      r.querySelector('#g-hist').addEventListener('click', () => openDetail('gym'));
+`, (r) => {
       r.querySelectorAll('[data-w]').forEach((b) => b.addEventListener('click', () => {
         LS.set('workout', { start: Date.now(), type: b.dataset.w, sets: {}, list: planOf(b.dataset.w).map((p) => p.name) });
         renderToday(); openGym();
