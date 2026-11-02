@@ -421,57 +421,36 @@ function openNight(picked = {}) {
 }
 
 // ---------- gym ----------
-const planOf = (type) => (CFG.gymPlan?.[type] || []);
-const allPlanned = () => ['A', 'B', 'extra'].flatMap(planOf);
-const planItem = (name) => allPlanned().find((p) => p.name === name);
-function lastSession(name) {
-  const rows = (DATA?.gym || []).filter((r) => r.exercise === name);
-  if (!rows.length) return null;
-  const d = rows.map((r) => r.date + ' ' + r.time).sort().pop();
-  return rows.filter((r) => r.date + ' ' + r.time === d).map((r) => ({ reps: Number(r.reps), kg: Number(r.kg) }));
-}
-function hint(name) {
-  const p = planItem(name), last = lastSession(name);
-  if (!p || !last || p.bodyweight) return '';
-  const top = Math.max(...last.map((s) => s.kg)), atTop = last.filter((s) => s.kg === top);
-  if (atTop.length < p.sets || atTop.some((s) => s.reps < p.reps[1])) return '';
-  const step = CFG.kgStep || 2.5;
-  return p.assist ? `↓ try ${kg(Math.max(0, top - step))} kg assist` : `↑ try ${kg(top + step)} kg`;
-}
-// ---------- exercise picker: recent ones as big buttons, type to filter everything, add a new one ----------
+// no plan targets any more (gymPlan left stats.json 2026-11-02): everything comes from what he actually logged
 function gymRecent() { // distinct exercises, most recently done first (later rows of the same workout count as more recent)
   const rows = (DATA?.gym || []).map((r, i) => ({ r, i })).filter(({ r }) => r.exercise);
   rows.sort((a, b) => (b.r.date + ' ' + b.r.time).localeCompare(a.r.date + ' ' + a.r.time) || b.i - a.i);
   return [...new Set(rows.map(({ r }) => r.exercise))];
 }
-// only exercises he has actually logged (plan names from stats.json are never listed)
-const allExercises = () => gymRecent();
 function lastInfo(name) {
   const rows = (DATA?.gym || []).filter((r) => r.exercise === name);
   if (!rows.length) return null;
   const d = rows.map((r) => r.date + ' ' + r.time).sort().pop();
   return { date: d.slice(0, 10), sets: rows.filter((r) => r.date + ' ' + r.time === d).map((r) => ({ reps: Number(r.reps), kg: Number(r.kg) })) };
 }
-// "8/8/5 @ 35 kg" · mixed weights: "6 @ 30 · 8/5 @ 25 kg" · bodyweight: "7/5 reps"
-function fmtLast(info, withDate = true) {
-  if (!info) return 'first time';
-  const s = info.sets, groups = [];
-  if (s.every((x) => !x.kg)) return (withDate ? `last time (${dm(info.date)}): ` : '') + s.map((x) => x.reps).join('/') + ' reps';
-  for (const x of s) { const g = groups[groups.length - 1]; if (g && g.kg === x.kg) g.reps.push(x.reps); else groups.push({ kg: x.kg, reps: [x.reps] }); }
-  return (withDate ? `last time (${dm(info.date)}): ` : '') + groups.map((g) => `${g.reps.join('/')} @ ${kg(g.kg)}`).join(' · ') + ' kg';
-}
+// last time as a mini table (folder cards): Set | kg | Reps
+const miniTable = (info) => `<span class="mt"><i>Set</i><i>kg</i><i>Reps</i>${info.sets.map((s, j) => `<i>${j + 1}</i><i>${s.kg ? kg(s.kg) : '—'}</i><i>${s.reps}</i>`).join('')}</span>`;
 const fold = (t) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ß/g, 'ss');
-// el: container · skip: names to leave out · onPick(name) · allowNew: offer "add as new"
-// layout: recent ones (big buttons) → search → every exercise under its muscle group (tap a group to open it)
-function exPicker(el, { skip = [], onPick, allowNew = true, n = 8 }) {
-  const names = allExercises().filter((x) => !skip.includes(x));
-  const btn = (name, small) => { const info = lastInfo(name);
-    return `<button type="button" class="exp-b${small ? ' sm' : ''}" data-ex="${esc(name)}"><b>${esc(name)}</b><small>${info ? `${dm(info.date)} · ${fmtLast(info, false)}` : 'never logged'}</small></button>`; };
+// el: container · skip: names to leave out · onPick(name) · live: sets of the running workout (count toward "this week")
+// layout: recent ones (big buttons) → search → muscle-group folders (body icon, sets this week; inside: cards with last time's table)
+function exPicker(el, { skip = [], onPick, allowNew = true, n = 8, live = {} }) {
+  const names = gymRecent().filter((x) => !skip.includes(x));
+  const btn = (name) => { const info = lastInfo(name);
+    return `<button type="button" class="exp-b" data-ex="${esc(name)}"><b>${esc(name)}</b><small>${info ? `${dm(info.date)} · ${shortSets(info.sets)}` : 'never logged'}</small></button>`; };
+  const card = (name) => { const info = lastInfo(name);
+    return `<button type="button" class="exp-b sm" data-ex="${esc(name)}"><b>${esc(name)}</b>${info ? `<small>last time ${dm(info.date)}</small>${miniTable(info)}` : '<small>never logged</small>'}</button>`; };
+  const today = nowKey(), week = groupSets(gymSessions(DATA?.gym), monOf(today), today);
+  for (const [x, sets] of Object.entries(live)) week[muscleOf(x)] += sets.length;
   const groups = MUSCLES.map((m) => [m, names.filter((x) => muscleOf(x) === m)]).filter(([, l]) => l.length);
   el.innerHTML = `<div class="exp"><div class="exp-grid exp-recent">${names.slice(0, n).map((x) => btn(x)).join('')}</div>
     <input type="search" class="exp-q" placeholder="${allowNew ? 'Search all, or type a new one…' : 'Search all exercises…'}" autocomplete="off" enterkeyhint="done">
     <div class="exp-grid exp-res"></div>
-    <div class="exp-groups">${groups.map(([m, l]) => `<details class="exp-g"><summary>${m} <small>${l.length}</small></summary><div class="exp-grid">${l.map((x) => btn(x, true)).join('')}</div></details>`).join('')}</div></div>`;
+    <div class="exp-groups">${groups.map(([m, l]) => `<details class="exp-g"><summary>${muscleIcon(m)}<span class="g-n">${m}<small>${l.length} exercise${l.length === 1 ? '' : 's'}</small></span><span class="g-w${week[m] ? '' : ' zero'}">${week[m]} set${week[m] === 1 ? '' : 's'} this week</span></summary><div class="exp-grid">${l.map(card).join('')}</div></details>`).join('')}</div></div>`;
   const q = el.querySelector('.exp-q'), res = el.querySelector('.exp-res'), rec = el.querySelector('.exp-recent'), grp = el.querySelector('.exp-groups');
   const wire = (root) => root.querySelectorAll('[data-ex]').forEach((b) => b.addEventListener('click', () => onPick(b.dataset.ex)));
   const draw = () => {
@@ -479,7 +458,7 @@ function exPicker(el, { skip = [], onPick, allowNew = true, n = 8 }) {
     rec.hidden = grp.hidden = !!t;
     if (!t) { res.innerHTML = ''; return; }
     const hits = names.filter((x) => fold(x).includes(t) || fold(muscleOf(x)).includes(t));
-    const exact = allExercises().some((x) => fold(x) === t);
+    const exact = gymRecent().some((x) => fold(x) === t);
     res.innerHTML = hits.map((x) => btn(x)).join('') + (allowNew && !exact ? `<button type="button" class="exp-b exp-new" data-new="1"><b>＋ Add “${esc(q.value.trim())}”</b><small>new exercise · ${muscleOf(q.value.trim())}</small></button>` : '')
       + (!hits.length && !allowNew ? '<p class="sub">No match.</p>' : '');
     wire(res);
@@ -491,10 +470,19 @@ function exPicker(el, { skip = [], onPick, allowNew = true, n = 8 }) {
 }
 window.exPicker = exPicker; window.gymRecent = gymRecent;
 
+// sets while logging, like Strong: Set | Previous (last time's set N, grey) | kg | Reps | ✕; rows for last time's sets not done yet stay empty
+function logTable(name, done, prev) {
+  const n = Math.max(done.length, prev.length), b = done.length > 1 ? bestIdx(done, isAssist(name)) : -1;
+  if (!n) return '';
+  return `<table class="st log"><thead><tr><th>Set</th><th>Previous</th><th>${isAssist(name) ? 'Assist kg' : 'kg'}</th><th>Reps</th><th></th></tr></thead><tbody>${Array.from({ length: n }, (_, j) => {
+    const s = done[j];
+    return `<tr class="${s ? '' : 'todo'}${j === b ? ' best' : ''}"><td>${j + 1}</td><td class="prev">${prevTxt(prev[j])}</td><td>${s ? (s.kg ? kg(s.kg) : '—') : ''}</td><td>${s ? s.reps : ''}</td><td>${s ? `<button class="x" data-del="${esc(name)}:${j}" aria-label="Delete set ${j + 1}">✕</button>` : ''}</td></tr>`; }).join('')}</tbody></table>`;
+}
+
 function openGym() {
   const wo = LS.get('workout', null);
   if (!wo) {
-    // no A/B plan lists any more: every workout starts empty and he picks what he actually does (workout column = "free")
+    // every workout starts empty and he picks what he actually does (workout column = "free")
     openSheet('Gym', `
       <button class="primary big-btn" data-w="free">▶ Start workout</button>
       <p class="sub">Starts the timer. Pick exercises as you go.</p>`, (r) => {
@@ -506,18 +494,16 @@ function openGym() {
     return;
   }
   const mins = Math.round((Date.now() - wo.start) / 60e3), dur = wo.dur ?? Math.max(1, mins);
-  const total = Object.values(wo.sets).reduce((n, s) => n + s.length, 0);
+  const total = Object.values(wo.sets).reduce((n, s) => n + s.length, 0), step = CFG.kgStep || 2.5;
   openSheet(`Workout ${wo.type === 'free' ? '' : wo.type} · ${mins} min`, `
     ${wo.list.map((name, i) => {
-      const p = planItem(name), last = lastSession(name), done = wo.sets[name] || [];
-      const next = done[done.length - 1] || last?.[done.length] || last?.[0] || { reps: p?.reps?.[0] || 10, kg: 0 };
-      const h = hint(name);
+      const info = lastInfo(name), prev = info?.sets || [], done = wo.sets[name] || [];
+      const next = done[done.length - 1] || prev[done.length] || prev[0] || { reps: 10, kg: 0 };
       return `<section class="ex">
-        <div class="ex-head"><b>${esc(name)}</b><span class="sub">${p ? `${p.sets} × ${p.reps[0]}${p.reps[1] !== p.reps[0] ? '–' + p.reps[1] : ''}` : ''}</span></div>
-        <div class="sub">${fmtLast(lastInfo(name))} ${h ? `<span class="good">${h}</span>` : ''}</div>
-        ${done.length ? `<ol class="sets">${done.map((s, j) => `<li>${s.reps} × ${kg(s.kg)} kg <button class="x" data-del="${i}:${j}" aria-label="Delete set">✕</button></li>`).join('')}</ol>` : ''}
-        <div class="set-row">${stepper('reps' + i, next.reps, 1, 'reps')}${p?.bodyweight ? `<input id="kg${i}" type="hidden" value="0">` : stepper('kg' + i, kg(h && !done.length ? (p.assist ? next.kg - (CFG.kgStep || 2.5) : next.kg + (CFG.kgStep || 2.5)) : next.kg), CFG.kgStep || 2.5, 'kg')}
-        <button class="primary small" data-add="${i}">+ Set</button></div>
+        <div class="ex-head">${muscleIcon(muscleOf(name))}<b>${esc(name)}</b><span class="sub">${info ? `last time ${dm(info.date)}` : 'first time'}</span></div>
+        ${logTable(name, done, prev)}
+        <div class="set-row">${stepper('kg' + i, kg(next.kg), step, 'kg')}${stepper('reps' + i, next.reps, 1, 'reps')}
+        <button class="primary small" data-add="${i}">+ Set ${done.length + 1}</button></div>
       </section>`;
     }).join('')}
     <h3>${wo.list.length ? 'Add exercise' : 'Pick an exercise'}</h3>
@@ -536,9 +522,9 @@ function openGym() {
       put(wo);
     }));
     r.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
-      const [i, j] = b.dataset.del.split(':').map(Number); wo.sets[wo.list[i]].splice(j, 1); put(wo);
+      const k = b.dataset.del.lastIndexOf(':'), name = b.dataset.del.slice(0, k); wo.sets[name].splice(Number(b.dataset.del.slice(k + 1)), 1); put(wo);
     }));
-    exPicker(r.querySelector('#g-pick'), { skip: wo.list, onPick: (n) => {
+    exPicker(r.querySelector('#g-pick'), { skip: wo.list, live: wo.sets, onPick: (n) => {
       if (!n || wo.list.includes(n)) return;
       wo.list.push(n); put(wo);
       sheet().querySelectorAll('.ex')[wo.list.length - 1]?.scrollIntoView({ block: 'start', behavior: 'smooth' });

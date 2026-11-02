@@ -18,7 +18,7 @@ function applyTheme() {
 applyTheme();
 
 const H = 3600e3;
-const APP_V = 'v12'; // shown in the status line; bump together with SHELL in sw.js
+const APP_V = 'v13'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
@@ -263,7 +263,7 @@ function bars(values, { max, min = 0, ref, cls, hollow } = {}) {
 
 // ---------- gym: one session per day, duration, weekly minutes, per-exercise progress ----------
 // Duration: the app writes "session N min" into the note of a workout's first row (gym-log.csv header unchanged).
-// Rows from before 2026-11-02 (or typed in by hand) have no duration → shown as "— min (not tracked yet)".
+// Rows from before 2026-11-02 (or typed in by hand) have no duration → "time not tracked".
 const DUR_RE = /\bsession (\d+) min\b/;
 const dm = (key) => new Date(key + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const monOf = (k) => addDays(k, -((new Date(k + 'T12:00:00Z').getUTCDay() + 6) % 7));
@@ -304,7 +304,7 @@ function weekBars(weeks, sessions) {
 // muscle groups: exact names first (his own spellings), then keywords for new exercises, else "Other"
 const MUSCLES = ['Chest', 'Shoulders', 'Triceps', 'Back', 'Biceps', 'Legs', 'Core', 'Other'];
 const MUSCLE_OF = { // only names he has actually logged; anything else goes through MUSCLE_RULES
-  'Schrägbank': 'Chest', 'Chest fly': 'Chest', 'Dip machine (seated)': 'Chest', // seated dip machine, pressed down in front = chest (his call, 2026-11-02)
+  'Schrägbank': 'Chest', 'Chest fly': 'Chest', 'Chest press-down machine': 'Chest', 'Dip machine (seated)': 'Chest', // seated dip machine, pressed down in front = chest (his call, 2026-11-02)
   'Shoulder press': 'Shoulders', 'Lateral raise machine': 'Shoulders',
   'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back',
   'Preacher curls': 'Biceps',
@@ -325,25 +325,74 @@ function muscleOf(name) {
   const t = name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
   return (MUSCLE_RULES.find(([, re]) => re.test(t)) || ['Other'])[0];
 }
-// sets per muscle group: last 7 days vs. the weekly average of the 4 weeks before
-function muscleSets(sessions, today) {
-  const out = Object.fromEntries(MUSCLES.map((m) => [m, { now: 0, before: 0 }]));
-  const from = addDays(today, -6), from4 = addDays(today, -34);
-  for (const s of sessions) for (const e of s.exercises) {
-    const g = out[muscleOf(e.name)];
-    if (s.date >= from && s.date <= today) g.now += e.sets.length;
-    else if (s.date >= from4 && s.date < from) g.before += e.sets.length / 4;
-  }
+// sets per muscle group between two day keys (inclusive)
+function groupSets(sessions, from, to) {
+  const out = Object.fromEntries(MUSCLES.map((m) => [m, 0]));
+  for (const s of sessions) if (s.date >= from && s.date <= to) for (const e of s.exercises) out[muscleOf(e.name)] += e.sets.length;
   return out;
 }
-function muscleBars(ms) {
-  const rows = MUSCLES.filter((m) => m !== 'Other' || ms.Other.now || ms.Other.before), max = Math.max(1, ...rows.map((m) => Math.max(ms[m].now, ms[m].before)));
-  return `<div class="mbars">${rows.map((m) => { const { now, before } = ms[m];
-    return `<div class="mbar"><span>${m}</span><div class="mtrack"><i class="${now ? '' : 'zero'}" style="width:${(now / max) * 100}%"></i>${before ? `<b title="4-week avg" style="left:${(before / max) * 100}%"></b>` : ''}</div><em class="${now ? '' : 'bad'}">${now}</em></div>`; }).join('')}</div>`;
+
+// ---------- body pictures (polygons in body.js): tiny icon per muscle group + the big front/back heatmap ----------
+const REGION = { chest: 'Chest', 'front-deltoids': 'Shoulders', 'back-deltoids': 'Shoulders', triceps: 'Triceps', trapezius: 'Back', 'upper-back': 'Back',
+  biceps: 'Biceps', abs: 'Core', obliques: 'Core', 'lower-back': 'Core', quadriceps: 'Legs', hamstring: 'Legs', calves: 'Legs', soleus: 'Legs',
+  adductor: 'Legs', abductors: 'Legs', gluteal: 'Legs' };
+const SIDE_OF = { Back: 'back', Triceps: 'back' }; // which view shows the group best in a tiny icon
+const bodySvg = (side, cls, clsOf, label) => `<svg class="${cls}" viewBox="0 0 100 220" ${label ? `role="img" aria-label="${label}"` : 'aria-hidden="true"'}>${BODY[side].map(([m, p]) => `<polygon points="${p}" class="${clsOf(REGION[m]) || ''}"/>`).join('')}</svg>`;
+const muscleIcon = (g) => bodySvg(SIDE_OF[g] || 'front', 'micon', (r) => (r && r === g ? 'on' : ''));
+const heatLvl = (n) => (!n ? '' : n < 4 ? 'h1' : n < 7 ? 'h2' : n < 10 ? 'h3' : 'h4');
+function muscleMap(counts) {
+  const groups = MUSCLES.filter((m) => m !== 'Other' || counts.Other);
+  return `<div class="body-map">${bodySvg('front', 'heat', (r) => r && heatLvl(counts[r]), 'Front')}${bodySvg('back', 'heat', (r) => r && heatLvl(counts[r]), 'Back')}</div>
+    <div class="heat-key"><span>0</span><i class="k0"></i><i class="k1"></i><i class="k2"></i><i class="k3"></i><i class="k4"></i><span>10+ sets</span></div>
+    <ul class="mlist">${groups.map((m) => `<li>${muscleIcon(m)}<span>${m}</span><b class="${counts[m] ? '' : 'bad'}">${counts[m]}</b></li>`).join('')}</ul>`;
 }
-let gymSel = null; // exercise shown in the progress chart (kept across re-renders)
-const isAssist = (name) => /assist/i.test(name) || !!(typeof planItem === 'function' && planItem(name)?.assist);
-// best set per session: heaviest (assist: least help); bodyweight-only exercises → most reps
+
+// ---------- sets like Strong/Hevy: Set | (Previous) | kg | Reps, best set highlighted ----------
+const isAssist = (name) => /assist/i.test(name);
+function bestIdx(sets, assist) { // heaviest (assist: least help), then most reps
+  let b = -1;
+  sets.forEach((s, i) => { const B = sets[b]; if (!B || (s.kg !== B.kg ? (assist ? s.kg < B.kg : s.kg > B.kg) : s.reps > B.reps)) b = i; });
+  return b;
+}
+const prevTxt = (s) => (!s ? '—' : s.kg ? `${kg(s.kg)} × ${s.reps}` : `${s.reps} reps`);
+function setTable(sets, name) {
+  const b = sets.length > 1 ? bestIdx(sets, isAssist(name)) : -1;
+  return `<table class="st"><thead><tr><th>Set</th><th>${isAssist(name) ? 'Assist kg' : 'kg'}</th><th>Reps</th></tr></thead><tbody>${sets.map((s, i) =>
+    `<tr class="${i === b ? 'best' : ''}"><td>${i + 1}</td><td>${s.kg ? kg(s.kg) : '—'}</td><td>${s.reps}</td></tr>`).join('')}</tbody></table>`;
+}
+// short form for tight spots: "35 kg × 8, 8, 5" · mixed "30 kg × 6 · 25 kg × 8, 5" · bodyweight "7, 5 reps"
+function shortSets(sets) {
+  if (sets.every((x) => !x.kg)) return sets.map((x) => x.reps).join(', ') + ' reps';
+  const g = [];
+  for (const x of sets) { const l = g[g.length - 1]; if (l && l.kg === x.kg) l.reps.push(x.reps); else g.push({ kg: x.kg, reps: [x.reps] }); }
+  return g.map((q) => `${q.kg ? kg(q.kg) + ' kg' : 'BW'} × ${q.reps.join(', ')}`).join(' · ');
+}
+function exBlock(e) {
+  const notes = [...new Set(e.sets.map((x) => x.note).filter(Boolean))];
+  return `<div class="exb"><div class="exb-h">${muscleIcon(muscleOf(e.name))}<b>${esc(e.name)}</b></div>${setTable(e.sets, e.name)}${notes.length ? `<p class="sub">${notes.map(esc).join(' · ')}</p>` : ''}</div>`;
+}
+const mmss = (m) => { const s = Math.round(m * 60), h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`; };
+function runTable(rows, withDate = true) {
+  return `<table class="st rt"><thead><tr>${withDate ? '<th>Date</th>' : ''}<th>km</th><th>Time</th><th>Pace</th></tr></thead><tbody>${rows.map((r) => {
+    const km = Number(r.km) || 0, m = Number(r.minutes) || 0;
+    return `<tr>${withDate ? `<td>${dm(r.date)}</td>` : ''}<td>${kg(km)}</td><td>${m ? mmss(m) : '—'}</td><td>${km && m ? mmss(m / km) + ' /km' : '—'}</td></tr>`; }).join('')}</tbody></table>`;
+}
+// one day's training: workout (every exercise with its set table) and/or run(s)
+function trainDay(x, k, sessions) {
+  const s = sessions.find((q) => q.date === k), runs = (x.runs || []).filter((r) => r.date === k), d = x.days[k] || {};
+  let h = `<h3 class="dh">${short(k)}</h3>`;
+  if (s) h += `<p class="sub">Gym${s.start ? ' at ' + esc(s.start) : ''} · ${s.mins != null ? s.mins + ' min' : 'time not tracked'} · ${s.exercises.length} exercise${s.exercises.length === 1 ? '' : 's'} · ${s.sets} sets</p>${s.exercises.map(exBlock).join('')}`;
+  else if (d.gym) h += '<p class="sub">Gym, from the day log (no sets logged in the app).</p>';
+  if (runs.length) h += `<p class="sub">Run${runs.length > 1 ? 's' : ''}${runs.some((r) => r.with) ? ' with ' + esc(runs.find((r) => r.with).with) : ''}</p>${runTable(runs, false)}`;
+  else if (d.run) h += '<p class="sub">Run, from the day log (not logged in the app).</p>';
+  if (!s && !d.gym && !runs.length && !d.run) h += `<p class="sub">${k > x.today ? 'Still ahead.' : 'Rest day.'}</p>`;
+  return h;
+}
+const isTrain = (x, k) => !!(x.days[k]?.gym || x.days[k]?.run);
+const lastTrain = (x) => Object.keys(x.days).filter((k) => k <= x.today && isTrain(x, k)).sort().pop();
+
+// ---------- progress: best set per session (heaviest; assist: least help; bodyweight-only: most reps) ----------
 function progressOf(name, sessions) {
   return sessions.filter((s) => s.exercises.some((e) => e.name === name)).reverse().map((s) => {
     const sets = s.exercises.find((e) => e.name === name).sets, bw = sets.every((x) => !x.kg);
@@ -368,12 +417,140 @@ function lineChart(pts, unit) {
   if (pts.length > 1) s += `<text x="${x(pts.length - 1)}" y="${Hh - 6}" text-anchor="end">${dm(pts[pts.length - 1].date)}</text>`;
   return s + `<text x="4" y="10">${unit}</text></svg>`;
 }
-const setsText = (sets) => (sets.every((x) => !x.kg) ? sets.map((x) => x.reps).join(' · ') + ' reps' : sets.map((x) => `${x.reps} × ${kg(x.kg)}`).join(' · ') + ' kg');
-function sessionCard(s) {
-  return `<article class="gcard"><div class="gcard-h"><b>${short(s.date)}</b><span>${[s.start && esc(s.start), s.mins != null ? `⏱ ${s.mins} min` : '⏱ — min (not tracked yet)', s.types.filter((t) => t !== 'free').map(esc).join('+')].filter(Boolean).join(' · ')}</span></div>
-    <ul>${s.exercises.map((e) => { const notes = [...new Set(e.sets.map((x) => x.note).filter(Boolean))];
-      return `<li><span>${esc(e.name)} <small class="mtag">${muscleOf(e.name)}</small></span><span>${setsText(e.sets)}</span>${notes.length ? `<small>${notes.map(esc).join(' · ')}</small>` : ''}</li>`; }).join('')}</ul>
-    <div class="sub">${s.exercises.length} exercise${s.exercises.length === 1 ? '' : 's'} · ${s.sets} sets</div></article>`;
+function spark(pts) {
+  const W = 56, Hh = 22, vs = pts.map((p) => p.v), lo = Math.min(...vs), hi = Math.max(...vs);
+  const x = (i) => (pts.length === 1 ? W / 2 : 3 + (i * (W - 6)) / (pts.length - 1)), y = (v) => (hi === lo ? Hh / 2 : 3 + (1 - (v - lo) / (hi - lo)) * (Hh - 6));
+  return `<svg class="spark" viewBox="0 0 ${W} ${Hh}" aria-hidden="true">${pts.length > 1 ? `<polyline points="${pts.map((p, i) => `${x(i)},${y(p.v)}`).join(' ')}"/>` : ''}<circle cx="${x(pts.length - 1)}" cy="${y(vs[vs.length - 1])}" r="2.5"/></svg>`;
+}
+const bestTxt = (p) => (p.bw ? `${p.v} reps` : `${kg(p.v)} kg × ${p.reps}`);
+function bestOf(pts, assist) { return pts.reduce((b, p) => (!b || (p.v !== b.v ? (p.bw ? p.v > b.v : assist ? p.v < b.v : p.v > b.v) : p.reps > b.reps) ? p : b), null); }
+function progressDetail(name, all) {
+  const pts = progressOf(name, all), bw = pts.length && pts[0].bw, first = pts[0], lastP = pts[pts.length - 1];
+  const delta = pts.length > 1 ? lastP.v - first.v : 0, better = isAssist(name) ? delta < 0 : delta > 0;
+  return `<p class="sub">${bw ? 'most reps' : isAssist(name) ? 'least assist (lower = better)' : 'top set'} per session</p>${lineChart(pts, bw ? 'reps' : 'kg')}`
+    + (pts.length ? `<p class="sub">${pts.length} session${pts.length === 1 ? '' : 's'} · last ${dm(lastP.date)}: ${bestTxt(lastP)}${pts.length > 1 ? ` · <span class="${delta === 0 ? '' : better ? 'good' : 'warn'}">${delta === 0 ? '±0' : sign(delta, delta % 1 ? 1 : 0)} ${bw ? 'reps' : 'kg'} since ${dm(first.date)}</span>` : ''}</p>` : '');
+}
+const progOpen = new Set(); // expanded progress rows (kept while the app is open)
+function progressRows(all) {
+  const names = gymRecent();
+  if (!names.length) return '<p class="sub">Log a workout first.</p>';
+  return MUSCLES.map((m) => [m, names.filter((n) => muscleOf(n) === m)]).filter(([, l]) => l.length).map(([m, l]) => `<h4 class="pg-h">${m}</h4>${l.map((n) => {
+    const pts = progressOf(n, all), b = bestOf(pts, isAssist(n)), open = progOpen.has(n);
+    return `<div class="pr${open ? ' open' : ''}"><button class="pr-b" data-pr="${esc(n)}" aria-expanded="${open}">${muscleIcon(m)}<span class="pr-n">${esc(n)}<small>${pts.length} session${pts.length === 1 ? '' : 's'}</small></span>${spark(pts)}<span class="pr-v">${b ? bestTxt(b) : '—'}</span></button><div class="pr-c">${open ? progressDetail(n, all) : ''}</div></div>`; }).join('')}`).join('');
+}
+
+// ---------- Training detail sheet: sections he can long-press to reorder (saved as trainOrder) ----------
+let trainMonth = null, trainSel = null;
+const TSECS = [['cal', 'Calendar'], ['muscles', 'Muscle groups · last 7 days'], ['weeks', 'Minutes per week'], ['progress', 'Progress'], ['runs', 'Runs']];
+const trainOrder = () => { const s = LS.get('trainOrder', []).filter((id) => TSECS.some(([k]) => k === id)); return [...s, ...TSECS.map(([k]) => k).filter((k) => !s.includes(k))]; };
+function trainCal(box, x, sessions, dayBox) {
+  const firstK = Object.keys(x.days).filter((k) => isTrain(x, k)).sort()[0] || x.today;
+  const month = (trainMonth ||= x.today.slice(0, 7)), m1 = month + '-01', dim = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate(), mEnd = month + '-' + String(dim).padStart(2, '0');
+  let rows = '';
+  for (let w = monOf(m1); w <= mEnd; w = addDays(w, 7)) rows += '<div class="cal-row">' + span(w, addDays(w, 6)).map((k) => {
+    if (k.slice(0, 7) !== month) return '<span class="cal-day out"></span>';
+    const d = x.days[k] || {}, cls = d.gym && d.run ? 'both' : d.gym ? 'gym' : d.run ? 'run' : k > x.today ? 'future' : 'rest';
+    return `<button class="cal-day t-${cls}${k === x.today ? ' now' : ''}${k === trainSel ? ' sel' : ''}" data-k="${k}" aria-label="${short(k)}${d.gym ? ', gym' : ''}${d.run ? ', run' : ''}">${Number(k.slice(8))}</button>`; }).join('') + '</div>';
+  const title = new Date(m1 + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const n = span(m1, mEnd).filter((k) => isTrain(x, k)).length;
+  box.innerHTML = `<div class="cal">
+    <div class="cal-head"><button class="cal-nav" data-nav="-1" aria-label="Previous month" ${month <= firstK.slice(0, 7) ? 'disabled' : ''}>‹</button><b>${title}</b>
+      <button class="cal-nav" data-nav="1" aria-label="Next month" ${month >= x.today.slice(0, 7) ? 'disabled' : ''}>›</button></div>
+    <div class="cal-row dow">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => `<span>${d}</span>`).join('')}</div>${rows}
+    <div class="cal-key"><span><i class="t-gym"></i>Gym</span><span><i class="t-run"></i>Run</span><span><i class="t-both"></i>Both</span><span class="sub">${n} day${n === 1 ? '' : 's'} this month</span></div></div>`;
+  box.querySelectorAll('.cal-day[data-k]').forEach((b) => b.addEventListener('click', () => {
+    trainSel = b.dataset.k; box.querySelectorAll('.cal-day.sel').forEach((o) => o.classList.remove('sel')); b.classList.add('sel');
+    dayBox.innerHTML = trainDay(x, trainSel, sessions);
+  }));
+  box.querySelectorAll('.cal-nav').forEach((b) => b.addEventListener('click', () => {
+    const d = new Date(month + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + Number(b.dataset.nav));
+    trainMonth = d.toISOString().slice(0, 7); trainCal(box, x, sessions, dayBox);
+  }));
+}
+function trainingDetail(x) {
+  const all = gymSessions(x.gym), wb = weekBars(gymWeeks(all, x.today, 8), all), counts = groupSets(all, addDays(x.today, -6), x.today);
+  const zero = MUSCLES.filter((m) => m !== 'Other' && !counts[m]);
+  const runs = [...(x.runs || [])].sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  trainSel ||= lastTrain(x) || x.today;
+  const body = {
+    cal: '<div class="tcal"></div><div class="tday"></div>',
+    muscles: `<p class="sub">Darker = more sets${zero.length ? ` · <span class="bad">0 sets: ${zero.join(', ')}</span>` : ''}</p>${muscleMap(counts)}`,
+    weeks: `<p class="sub">last 8 weeks${wb.timed && all.some((s) => s.mins == null) ? ` · hollow = not timed, counted as ~${wb.med} min` : wb.timed ? '' : ' · sets per week until workouts are timed'}</p>${wb.chart}<div class="detail gw-detail"></div>`,
+    progress: `<p class="sub">Top set over time · tap a row for the chart</p>${progressRows(all)}`,
+    runs: runs.length ? runTable(runs) : '<p class="sub">No runs logged in the app yet.</p>',
+  };
+  const title = (k) => (k === 'weeks' && !wb.timed ? 'Sets per week' : TSECS.find(([q]) => q === k)[1]);
+  return { html: `<div class="tsecs">${trainOrder().map((k) => `<section class="tsec" data-id="${k}">${h3(title(k))}${body[k]}</section>`).join('')}</div>`,
+    wire(root) {
+      trainCal(root.querySelector('.tcal'), x, all, root.querySelector('.tday'));
+      root.querySelector('.tday').innerHTML = trainDay(x, trainSel, all);
+      const det = root.querySelector('.gw-detail'), svg = root.querySelector('[data-id=weeks] svg.chart');
+      det.textContent = wb.tap(99);
+      svg?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = wb.tap(Number(i)); });
+      root.querySelectorAll('[data-pr]').forEach((b) => b.addEventListener('click', () => {
+        const n = b.dataset.pr, row = b.parentElement, open = !progOpen.has(n);
+        open ? progOpen.add(n) : progOpen.delete(n);
+        row.classList.toggle('open', open); b.setAttribute('aria-expanded', open);
+        row.querySelector('.pr-c').innerHTML = open ? progressDetail(n, all) : '';
+      }));
+      dragSort(root.querySelector('.tsecs'), '.tsec', (ids) => LS.set('trainOrder', ids));
+    } };
+}
+
+// ---------- long-press drag to reorder (like moving apps on a home screen) ----------
+// hold ~450 ms without moving (> 8 px cancels → normal scroll/tap) → item lifts and follows the finger, others make room; drop saves.
+let DRAGGING = false;
+document.addEventListener('touchmove', (e) => { if (DRAGGING) e.preventDefault(); }, { passive: false });
+function dragSort(root, sel, onDrop) {
+  if (!root || root.dataset.drag) return;
+  root.dataset.drag = '1';
+  root.addEventListener('contextmenu', (e) => { if (e.target.closest(sel)) e.preventDefault(); });
+  root.addEventListener('pointerdown', (ev) => {
+    if (DRAGGING || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+    const item = ev.target.closest(sel);
+    if (!item || item.parentElement.closest(sel) || ev.target.closest('input, select, textarea')) return;
+    const sx = ev.clientX, sy = ev.clientY, pid = ev.pointerId;
+    let px = sx, py = sy, ph = null, dx = 0, dy = 0, css = '', raf = 0;
+    const scroller = root.closest('.sheet') || document.scrollingElement;
+    const timer = setTimeout(start, 450);
+    const off = () => { clearTimeout(timer); removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); };
+    function move(e) {
+      if (e.pointerId !== pid) return;
+      px = e.clientX; py = e.clientY;
+      if (!ph) { if (Math.hypot(px - sx, py - sy) > 8) off(); return; }
+      e.preventDefault(); follow();
+    }
+    function up(e) { if (e.pointerId !== pid) return; off(); if (ph) finish(); }
+    function start() {
+      const r = item.getBoundingClientRect();
+      ph = document.createElement(item.tagName); ph.className = item.className + ' drag-ph'; ph.style.height = r.height + 'px';
+      item.before(ph);
+      dx = sx - r.left; dy = sy - r.top; css = item.style.cssText;
+      Object.assign(item.style, { position: 'fixed', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: '0', zIndex: '30', pointerEvents: 'none' });
+      item.classList.add('lifted'); DRAGGING = true;
+      navigator.vibrate?.(10);
+      const edge = () => { const h = innerHeight; if (py < 70) scroller.scrollTop -= 9; else if (py > h - 70) scroller.scrollTop += 9; follow(); raf = requestAnimationFrame(edge); };
+      raf = requestAnimationFrame(edge);
+    }
+    function follow() {
+      item.style.left = px - dx + 'px'; item.style.top = py - dy + 'px';
+      const t = document.elementFromPoint(px, py)?.closest(sel);
+      if (!t || t === item || t === ph || !root.contains(t)) return;
+      const tr = t.getBoundingClientRect(), side = t.parentElement.classList.contains('tiles') ? px > tr.left + tr.width / 2 : py > tr.top + tr.height / 2;
+      const ref = side ? t.nextElementSibling : t;
+      if (ref !== ph && !(ph.parentNode === t.parentNode && ph.nextElementSibling === ref)) t.parentNode.insertBefore(ph, ref);
+    }
+    function finish() {
+      cancelAnimationFrame(raf);
+      item.style.cssText = css; item.classList.remove('lifted');
+      ph.replaceWith(item); DRAGGING = false;
+      // the release must not count as a tap (no detail sheet, no day selected)
+      const kill = (e) => { e.stopPropagation(); e.preventDefault(); };
+      addEventListener('click', kill, { capture: true, once: true }); setTimeout(() => removeEventListener('click', kill, { capture: true }), 400);
+      onDrop([...root.querySelectorAll(sel)].map((el) => el.dataset.id));
+    }
+    addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', up);
+  });
 }
 
 // ---------- streak ----------
@@ -540,45 +717,26 @@ const CARDS = [
       chart: bars(v, { max: Math.max(2, ...v.filter((n) => n != null)), cls: (n) => (n ? 'var(--accent)' : 'var(--line)') }),
       tap: (i) => { const k = x.dates[i]; return k < start ? `${short(k)}: before tracking` : `${short(k)}: ${x.days[k]?.showers || 0} shower${x.days[k]?.showers === 1 ? '' : 's'}`; } };
   } },
-  { id: 'training', title: 'Training', render(x) {
+  { id: 'training', title: 'Training', ownSheet: true, render(x) {
     const g = x.dates.filter((k) => x.days[k]?.gym).length, r = x.dates.filter((k) => x.days[k]?.run).length;
-    const weeks = Math.max(1, x.dates.length / 7);
+    const weeks = Math.max(1, x.dates.length / 7), last = lastTrain(x);
     return { big: String(g + r), unit: 'sessions',
-      sub: `${g} gym · ${r} run` + (CFG.trainingPerWeek ? ` · goal ${Math.round(CFG.trainingPerWeek * weeks)}` : ''),
-      chart: bars(x.dates.map((k) => ((x.days[k]?.gym ? 1 : 0) + (x.days[k]?.run ? 1 : 0)) || null), { max: 2 }),
-      tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${[d.gym && 'gym', d.run && 'run'].filter(Boolean).join(' + ') || 'rest'}`; } };
-  } },
-  // full section right in the stats view (always a full-width card, never a tile / behind a tap)
-  { id: 'gym', title: 'Gym', inline: true, render(x) {
-    const all = gymSessions(x.gym), inR = all.filter((s) => s.date >= x.dates[0] && s.date <= x.today), last = all[0];
-    const wb = weekBars(gymWeeks(all, x.today, 8), all), ms = muscleSets(all, x.today);
-    const neglected = MUSCLES.filter((m) => m !== 'Other' && !ms[m].now);
-    const names = gymRecent(), byGroup = MUSCLES.map((m) => [m, names.filter((n) => muscleOf(n) === m)]).filter(([, l]) => l.length);
-    const showN = 3;
-    return { big: String(inR.length), unit: inR.length === 1 ? 'session' : 'sessions',
-      sub: last ? `last ${short(last.date)} · ${last.exercises.length} exercises${last.mins != null ? ` · ${last.mins} min` : ''}` : 'no gym logged yet',
-      html: `${h3(`${wb.timed ? 'Minutes' : 'Sets'} per week`)}<p class="sub">last 8 weeks${wb.timed && all.some((s) => s.mins == null) ? ` · hollow = not timed, counted as ~${wb.med} min` : wb.timed ? '' : ' · minutes show up once workouts are timed'}</p>${wb.chart}<div class="detail gw-detail"></div>
-        ${h3('Sets per muscle group')}<p class="sub">last 7 days · tick = weekly average of the 4 weeks before${neglected.length ? ` · <span class="bad">0 sets: ${neglected.join(', ')}</span>` : ''}</p>${muscleBars(ms)}
-        ${h3('Progress per exercise')}
-        ${names.length ? `<select class="gp-sel" aria-label="Exercise">${byGroup.map(([m, l]) => `<optgroup label="${m}">${l.map((n) => `<option>${esc(n)}</option>`).join('')}</optgroup>`).join('')}</select><div class="gp-chart"></div>` : '<p class="sub">Log a workout first.</p>'}
-        ${h3(`History · ${all.length} session${all.length === 1 ? '' : 's'}`)}
-        ${all.length ? `<div class="gcards">${all.slice(0, 60).map((s, i) => (i < showN ? sessionCard(s) : sessionCard(s).replace('<article class="gcard"', '<article class="gcard" hidden'))).join('')}</div>
-          ${all.length > showN ? `<button class="gmore">Show all ${all.length} sessions</button>` : ''}` : '<p class="sub">Nothing logged yet.</p>'}`,
+      sub: `${g} gym · ${r} run` + (CFG.trainingPerWeek ? ` · goal ${Math.round(CFG.trainingPerWeek * weeks)}` : '') + (last ? ` · last session ${short(last)}` : ''),
+      // gym = accent, run = --run (same colours as the calendar in the detail sheet), both = full height
+      chart: bars(x.dates.map((k) => ((x.days[k]?.gym ? 1 : 0) + (x.days[k]?.run ? 1 : 0)) || null), { max: 2, cls: (v, i) => (x.days[x.dates[i]]?.gym ? 'var(--accent)' : 'var(--run)') }),
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${[d.gym && 'gym', d.run && 'run'].filter(Boolean).join(' + ') || 'rest'}`; },
+      html: '<div class="train-day"></div>',
+      // tap a bar → only that bar highlighted + that day's workout (set tables) / run below (same as the study time card)
       wire(el) {
-        const det = el.querySelector('.gw-detail'), svg = el.querySelector('svg.chart');
-        if (det) { det.textContent = wb.tap(99); svg?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = wb.tap(Number(i)); }); }
-        el.querySelector('.gmore')?.addEventListener('click', (ev) => { el.querySelectorAll('.gcard[hidden]').forEach((c) => (c.hidden = false)); ev.target.remove(); });
-        const sel = el.querySelector('.gp-sel'), out = el.querySelector('.gp-chart');
-        if (!sel) return;
-        const show = (name) => {
-          const pts = progressOf(name, all), bw = pts.length && pts[0].bw, first = pts[0], lastP = pts[pts.length - 1];
-          const delta = pts.length > 1 ? lastP.v - first.v : 0, better = isAssist(name) ? delta < 0 : delta > 0;
-          out.innerHTML = `<p class="sub">${muscleOf(name)} · ${bw ? 'most reps' : isAssist(name) ? 'least assist (lower = better)' : 'top set'} per session</p>${lineChart(pts, bw ? 'reps' : 'kg')}`
-            + (pts.length ? `<p class="sub">${pts.length} session${pts.length === 1 ? '' : 's'} · now ${bw ? lastP.v + ' reps' : `${lastP.reps} × ${kg(lastP.v)} kg`}${pts.length > 1 ? ` · <span class="${delta === 0 ? '' : better ? 'good' : 'warn'}">${delta === 0 ? '±0' : sign(delta, delta % 1 ? 1 : 0)} ${bw ? 'reps' : 'kg'} since ${dm(first.date)}</span>` : ''}</p>` : '');
-        };
-        sel.value = gymSel && names.includes(gymSel) ? gymSel : names[0];
-        sel.addEventListener('change', () => { gymSel = sel.value; show(sel.value); });
-        show(sel.value);
+        const svg = el.querySelector('svg.chart'), box = el.querySelector('.train-day');
+        if (!svg || !box) return;
+        const all = gymSessions(x.gym);
+        svg.addEventListener('click', (ev) => {
+          const i = ev.target.getAttribute('data-i'); if (i == null) return;
+          el.querySelectorAll('.detail').forEach((dd) => (dd.hidden = true));
+          svg.classList.add('has-sel'); svg.querySelectorAll('rect.bar').forEach((b) => b.classList.toggle('sel', b.dataset.b === i));
+          box.innerHTML = trainDay(x, x.dates[Number(i)], all);
+        });
       } };
   } },
   { id: 'sleep', title: 'Asleep at', render(x) {
@@ -734,7 +892,7 @@ function order() {
 const hidden = () => new Set(LS.get('hidden', []));
 
 // ---------- layouts: tiles (default) · full cards · section tabs · collapsed list; tap any card → detail sheet ----------
-const SECTION = { streak: 'study', score: 'study', study: 'study', exams: 'study', piano: 'habits', protein: 'body', kcal: 'body', training: 'body', gym: 'body', weight: 'body',
+const SECTION = { streak: 'study', score: 'study', study: 'study', exams: 'study', piano: 'habits', protein: 'body', kcal: 'body', training: 'body', weight: 'body',
   sleep: 'body', sleeplen: 'body', mouth: 'habits', shower: 'habits', mood: 'habits', caffeine: 'habits', home: 'habits', money: 'money' };
 const SECTIONS = [['study', 'Study'], ['body', 'Body'], ['habits', 'Habits'], ['money', 'Money']];
 const LAYOUTS = [['tiles', 'Tiles'], ['full', 'Full cards'], ['sections', 'Section tabs'], ['list', 'Collapsed list']];
@@ -752,7 +910,7 @@ const run = (def, ctx) => { try { return def.render(ctx); } catch (e) { return {
 
 function fullCard(def, r, ctx) {
   const el = document.createElement('article');
-  el.className = 'card' + (def.inline ? ' inline' : '');
+  el.className = 'card'; el.dataset.id = def.id;
   el.innerHTML = `${r.head ? `<div class="card-head"><h2>${def.title}</h2>${r.head}</div>` : `<h2>${def.title}</h2>`}<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.chart || ''}${r.html || ''}${r.tap ? '<div class="detail"></div>' : ''}`;
   if (r.tap) {
     const det = el.querySelector('.detail');
@@ -761,7 +919,7 @@ function fullCard(def, r, ctx) {
   }
   r.wire?.(el);
   // tapping the card itself (not its chart, calendar or buttons) opens the details
-  if (!def.inline) el.addEventListener('click', (ev) => { if (!ev.target.closest('button, svg, input, a, select')) openDetail(def.id); });
+  el.addEventListener('click', (ev) => { if (!ev.target.closest('button, svg, input, a, select')) openDetail(def.id); });
   return el;
 }
 
@@ -783,8 +941,9 @@ function render() {
   let grid = null;
   for (const id of ids) {
     const def = CARDS.find((c) => c.id === id), r = run(def, ctx);
-    if (mode === 'full' || mode === 'sections' || def.inline || (mode === 'tiles' && big.has(id))) { grid = null; root.appendChild(fullCard(def, r, ctx)); continue; }
+    if (mode === 'full' || mode === 'sections' || (mode === 'tiles' && big.has(id))) { grid = null; root.appendChild(fullCard(def, r, ctx)); continue; }
     const el = document.createElement('article');
+    el.dataset.id = id;
     if (mode === 'tiles') {
       if (!grid) { grid = document.createElement('div'); grid.className = 'tiles'; root.appendChild(grid); }
       el.className = 'tile';
@@ -797,6 +956,8 @@ function render() {
     }
     el.addEventListener('click', () => openDetail(id));
   }
+  // long-press a card → drag it somewhere else; saves the same `order` the ⚙ arrows use (hidden cards + other sections keep their slots)
+  dragSort(root, '[data-id]', (ids) => { const vis = new Set(ids); let j = 0; LS.set('order', order().map((id) => (vis.has(id) ? ids[j++] : id))); render(); });
 }
 
 // ---------- detail sheets ----------
@@ -858,20 +1019,25 @@ const DETAILS = {
   mood: (x) => listHtml(back(x).filter((k) => x.days[k]?.mood || x.days[k]?.energy).map((k) => { const d = x.days[k], h = sleepLen(x, k);
     return [short(k), `mood ${d.mood ?? '—'} · energy ${d.energy ?? '—'}${h != null ? ` · slept ${h} h` : ''}`]; })) || '<p class="sub">Rate it at 😴 Night.</p>',
   money: (x) => h3('Last 10') + listHtml([...x.spends].filter((s) => s.date <= x.today).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10).map((s) => [`${short(s.date)} · ${esc(s.what)} <small>${esc(s.cat)}</small>`, `€${s.eur.toFixed(2)}`])),
+  training: (x) => trainingDetail(x),
   weight: (x) => { const w = inRange(x, x.weights).reverse();
     return listHtml(w.map((r) => { const wk = x.weights.filter((q) => q.date > addDays(r.date, -7) && q.date <= r.date);
       return [`${short(r.date)}${r.note ? ' <small>' + esc(r.note) + '</small>' : ''}`, `${r.kg.toFixed(1)} kg · 7d ⌀ ${avg(wk.map((q) => q.kg)).toFixed(1)}`]; })); },
 };
 function openDetail(id) {
   const def = CARDS.find((c) => c.id === id), ctx = ctxFor(), r = run(def, ctx);
-  let extra = '';
+  let extra = '', dwire = null;
   try { extra = DETAILS[id] ? DETAILS[id](ctx) : r.tap ? h3('Day by day') + listHtml(back(ctx).map((k) => [r.tap(ctx.dates.indexOf(k)), ''])) : ''; } catch (e) { extra = `<p class="sub">couldn’t build details: ${esc(e.message)}</p>`; }
+  if (extra && typeof extra === 'object') ({ html: extra, wire: dwire } = extra);
+  // ownSheet cards (Training) show only number + sub line on top, then their own sections
+  if (def.ownSheet) { openSheet(def.title, `<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${extra}`, (root) => dwire?.(root)); return; }
   openSheet(def.title, `<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.head || ''}${r.chart || ''}${r.tap ? '<div class="detail"></div>' : ''}${r.html || ''}${extra}`, (root) => {
     if (r.tap) {
       const det = root.querySelector('.detail'); det.textContent = r.tap(ctx.dates.length - 1);
       root.querySelector('svg.chart')?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = r.tap(Number(i)); });
     }
     r.wire?.(root);
+    dwire?.(root);
   });
 }
 window.openDetail = openDetail;
