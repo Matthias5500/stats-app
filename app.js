@@ -257,6 +257,80 @@ function bars(values, { max, min = 0, ref, cls, hollow } = {}) {
   return s + '</svg>';
 }
 
+// ---------- gym: one session per day, duration, weekly minutes, per-exercise progress ----------
+// Duration: the app writes "session N min" into the note of a workout's first row (gym-log.csv header unchanged).
+// Rows from before 2026-11-02 (or typed in by hand) have no duration → shown as "time unknown".
+const DUR_RE = /\bsession (\d+) min\b/;
+const dm = (key) => new Date(key + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const monOf = (k) => addDays(k, -((new Date(k + 'T12:00:00Z').getUTCDay() + 6) % 7));
+function gymSessions(rows) {
+  const by = {};
+  for (const r of rows || []) {
+    if (!r.date || !r.exercise) continue;
+    const s = (by[r.date] ||= { date: r.date, times: new Set(), types: new Set(), ex: {}, order: [], durs: {} });
+    s.times.add(r.time || ''); if (r.workout) s.types.add(r.workout);
+    if (!s.ex[r.exercise]) { s.ex[r.exercise] = []; s.order.push(r.exercise); }
+    const m = (r.note || '').match(DUR_RE);
+    if (m) s.durs[r.time] = Math.max(s.durs[r.time] || 0, Number(m[1]));
+    s.ex[r.exercise].push({ reps: Number(r.reps) || 0, kg: Number(r.kg) || 0, note: (r.note || '').replace(DUR_RE, '').replace(/^[\s,;·]+|[\s,;·]+$/g, '') });
+  }
+  return Object.values(by).map((s) => {
+    const times = [...s.times].sort(), known = times.filter((t) => s.durs[t] != null);
+    return { date: s.date, start: times[0], types: [...s.types], exercises: s.order.map((name) => ({ name, sets: s.ex[name] })),
+      sets: sum(s.order.map((n) => s.ex[n].length)), mins: known.length ? sum(known.map((t) => s.durs[t])) : null };
+  }).sort((a, b) => b.date.localeCompare(a.date));
+}
+function gymWeeks(sessions, today, n) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const mon = addDays(monOf(today), -7 * i), ss = sessions.filter((s) => s.date >= mon && s.date <= addDays(mon, 6));
+    out.push({ mon, n: ss.length, sets: sum(ss.map((s) => s.sets)), mins: sum(ss.map((s) => s.mins || 0)), unknown: ss.filter((s) => s.mins == null).length });
+  }
+  return out;
+}
+// minutes per week once timed workouts exist (weeks with untimed sessions = hollow, estimated at the median), else sets per week
+function weekBars(weeks, sessions) {
+  const timed = sessions.filter((s) => s.mins != null).map((s) => s.mins).sort((a, b) => a - b);
+  const med = timed.length ? timed[Math.floor((timed.length - 1) / 2)] : 0;
+  const v = weeks.map((w) => (w.n ? (timed.length ? w.mins + w.unknown * med : w.sets) : null));
+  return { timed: timed.length > 0, med, chart: bars(v, { hollow: (i) => timed.length > 0 && weeks[i].unknown > 0 }),
+    tap: (i) => { const w = weeks[Math.min(i, weeks.length - 1)];
+      return `Week of ${dm(w.mon)}: ${w.n ? `${w.n} session${w.n === 1 ? '' : 's'} · ${w.sets} sets · ${w.mins ? w.mins + ' min' : ''}${w.unknown ? `${w.mins ? ' + ' : ''}${w.unknown} untimed` : ''}` : 'no gym'}`; } };
+}
+const isAssist = (name) => /assist/i.test(name) || !!(typeof planItem === 'function' && planItem(name)?.assist);
+// best set per session: heaviest (assist: least help); bodyweight-only exercises → most reps
+function progressOf(name, sessions) {
+  return sessions.filter((s) => s.exercises.some((e) => e.name === name)).reverse().map((s) => {
+    const sets = s.exercises.find((e) => e.name === name).sets, bw = sets.every((x) => !x.kg);
+    if (bw) { const r = Math.max(...sets.map((x) => x.reps)); return { date: s.date, v: r, reps: r, bw }; }
+    const kgs = sets.map((x) => x.kg).filter(Boolean), top = isAssist(name) ? Math.min(...kgs) : Math.max(...kgs);
+    return { date: s.date, v: top, reps: Math.max(...sets.filter((x) => x.kg === top).map((x) => x.reps)), bw };
+  });
+}
+function lineChart(pts, unit) {
+  if (!pts.length) return '<p class="sub">No sets logged for this one yet.</p>';
+  const W = 320, Hh = 130, L = 34, R = 12, T = 14, B = 22, vs = pts.map((p) => p.v);
+  // round axis ends so the labels stay whole numbers
+  let lo = Math.min(...vs), hi = Math.max(...vs); if (hi === lo) { lo -= 5; hi += 5; }
+  const pad = (hi - lo) * 0.15; lo = Math.max(0, Math.floor(lo - pad)); hi = Math.ceil(hi + pad); if ((hi - lo) % 2) hi++;
+  const x = (i) => (pts.length === 1 ? (L + W - R) / 2 : L + (i * (W - L - R)) / (pts.length - 1)), y = (v) => T + (1 - (v - lo) / (hi - lo)) * (Hh - T - B);
+  const glass = theme() === 'glass', stroke = glass ? 'url(#g-line)' : 'var(--accent)';
+  let s = `<svg class="lchart" viewBox="0 0 ${W} ${Hh}" role="img" aria-label="progress">${glass ? '<defs><linearGradient id="g-line" x1="0" x2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>' : ''}`;
+  for (const v of [lo, (lo + hi) / 2, hi]) s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 5}" y="${y(v) + 3.5}" text-anchor="end">${kg(v)}</text>`;
+  if (pts.length > 1) s += `<polyline fill="none" stroke="${stroke}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="${pts.map((p, i) => `${x(i)},${y(p.v)}`).join(' ')}"/>`;
+  pts.forEach((p, i) => (s += `<circle cx="${x(i)}" cy="${y(p.v)}" r="4" fill="var(--bg)" stroke="var(--accent)" stroke-width="2"/>`));
+  s += `<text x="${x(0)}" y="${Hh - 6}" text-anchor="${pts.length === 1 ? 'middle' : 'start'}">${dm(pts[0].date)}</text>`;
+  if (pts.length > 1) s += `<text x="${x(pts.length - 1)}" y="${Hh - 6}" text-anchor="end">${dm(pts[pts.length - 1].date)}</text>`;
+  return s + `<text x="4" y="10">${unit}</text></svg>`;
+}
+const setsText = (sets) => (sets.every((x) => !x.kg) ? sets.map((x) => x.reps).join(' · ') + ' reps' : sets.map((x) => `${x.reps} × ${kg(x.kg)}`).join(' · ') + ' kg');
+function sessionCard(s) {
+  return `<article class="gcard"><div class="gcard-h"><b>${short(s.date)}</b><span>${[s.start && esc(s.start), s.mins != null ? `⏱ ${s.mins} min` : 'time unknown', s.types.filter((t) => t !== 'free').map(esc).join('+')].filter(Boolean).join(' · ')}</span></div>
+    <ul>${s.exercises.map((e) => { const notes = [...new Set(e.sets.map((x) => x.note).filter(Boolean))];
+      return `<li><span>${esc(e.name)}</span><span>${setsText(e.sets)}</span>${notes.length ? `<small>${notes.map(esc).join(' · ')}</small>` : ''}</li>`; }).join('')}</ul>
+    <div class="sub">${s.exercises.length} exercise${s.exercises.length === 1 ? '' : 's'} · ${s.sets} sets</div></article>`;
+}
+
 // ---------- streak ----------
 // earned days count, frozen days keep the streak alive without adding to it, anything else breaks it; today joins once earned
 const stOf = (days, k) => days[k]?.streak || 'no';
@@ -411,6 +485,27 @@ const CARDS = [
       chart: bars(x.dates.map((k) => ((x.days[k]?.gym ? 1 : 0) + (x.days[k]?.run ? 1 : 0)) || null), { max: 2 }),
       tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${[d.gym && 'gym', d.run && 'run'].filter(Boolean).join(' + ') || 'rest'}`; } };
   } },
+  { id: 'gym', title: 'Gym', render(x) {
+    const all = gymSessions(x.gym), inR = all.filter((s) => s.date >= x.dates[0] && s.date <= x.today), last = all[0];
+    const wb = weekBars(gymWeeks(all, x.today, 8), all);
+    return { big: String(inR.length), unit: inR.length === 1 ? 'session' : 'sessions',
+      sub: (last ? `last ${short(last.date)} · ${last.exercises.length} exercises${last.mins != null ? ` · ${last.mins} min` : ''}` : 'no gym logged yet')
+        + ` · bars = ${wb.timed ? 'minutes' : 'sets'} per week${wb.timed && all.some((s) => s.mins == null) ? ` (hollow = untimed, ~${wb.med} min each)` : ''}`,
+      chart: wb.chart, tap: wb.tap,
+      wire(el) {
+        const pk = el.querySelector('#gp-pick'), out = el.querySelector('#gp-chart');
+        if (!pk) return;
+        const show = (name) => {
+          const pts = progressOf(name, all), bw = pts.length && pts[0].bw, first = pts[0], lastP = pts[pts.length - 1];
+          const delta = pts.length > 1 ? lastP.v - first.v : 0, better = isAssist(name) ? delta < 0 : delta > 0;
+          out.innerHTML = `<p class="gp-name"><b>${esc(name)}</b> · ${bw ? 'most reps' : isAssist(name) ? 'least assist (lower = better)' : 'top set'} per session</p>${lineChart(pts, bw ? 'reps' : 'kg')}`
+            + (pts.length ? `<p class="sub">${pts.length} session${pts.length === 1 ? '' : 's'} · now ${bw ? lastP.v + ' reps' : `${lastP.reps} × ${kg(lastP.v)} kg`}${pts.length > 1 ? ` · <span class="${delta === 0 ? '' : better ? 'good' : 'warn'}">${delta === 0 ? '±0' : sign(delta, delta % 1 ? 1 : 0)} ${bw ? 'reps' : 'kg'} since ${dm(first.date)}</span>` : ''}</p>` : '');
+        };
+        const pick = (name) => { show(name); exPicker(pk, { onPick: pick, allowNew: false, current: name, compact: true }); };
+        const first = gymRecent()[0];
+        if (first) pick(first); else out.innerHTML = '<p class="sub">Log a workout first.</p>';
+      } };
+  } },
   { id: 'sleep', title: 'Asleep at', render(x) {
     const h = x.dates.map((k) => sleepHours(x.days[k]?.asleep));
     const v = h.filter((n) => n != null).sort((a, b) => a - b);
@@ -564,7 +659,7 @@ function order() {
 const hidden = () => new Set(LS.get('hidden', []));
 
 // ---------- layouts: tiles (default) · full cards · section tabs · collapsed list; tap any card → detail sheet ----------
-const SECTION = { streak: 'study', score: 'study', study: 'study', exams: 'study', piano: 'habits', protein: 'body', kcal: 'body', training: 'body', weight: 'body',
+const SECTION = { streak: 'study', score: 'study', study: 'study', exams: 'study', piano: 'habits', protein: 'body', kcal: 'body', training: 'body', gym: 'body', weight: 'body',
   sleep: 'body', sleeplen: 'body', mouth: 'habits', shower: 'habits', mood: 'habits', caffeine: 'habits', home: 'habits', money: 'money' };
 const SECTIONS = [['study', 'Study'], ['body', 'Body'], ['habits', 'Habits'], ['money', 'Money']];
 const LAYOUTS = [['tiles', 'Tiles'], ['full', 'Full cards'], ['sections', 'Section tabs'], ['list', 'Collapsed list']];
@@ -657,6 +752,11 @@ const back = (x) => [...x.dates].reverse();
 const DETAILS = {
   protein: (x) => foodDetail(x, 'protein_g', 'g') + h3(`Days ≥ ${PROTEIN_GOAL()} g`) + listHtml(back(x).filter((k) => x.days[k]?.meals).map((k) => [short(k), `${Math.round(x.days[k].protein)} g`, x.days[k].protein >= PROTEIN_GOAL() ? 'good' : 'warn'])),
   kcal: (x) => foodDetail(x, 'kcal', 'kcal'),
+  gym: (x) => {
+    const all = gymSessions(x.gym);
+    return h3('Progress per exercise') + '<div id="gp-chart" class="gp-chart"></div><div id="gp-pick"></div>'
+      + h3(`History · ${all.length} session${all.length === 1 ? '' : 's'}`) + (all.length ? `<div class="gcards">${all.slice(0, 60).map(sessionCard).join('')}</div>` : '<p class="sub">Nothing logged yet.</p>');
+  },
   piano: (x) => {
     const rows = inRange(x, x.piano || []).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
     if (!rows.length) return '<p class="sub">No piano in this range yet. ▶ Start next time you sit down.</p>';

@@ -438,7 +438,54 @@ function hint(name) {
   const step = CFG.kgStep || 2.5;
   return p.assist ? `↓ try ${kg(Math.max(0, top - step))} kg assist` : `↑ try ${kg(top + step)} kg`;
 }
-const fmtSets = (sets) => sets.map((s) => `${s.reps}×${kg(s.kg)}`).join(', ');
+// ---------- exercise picker: recent ones as big buttons, type to filter everything, add a new one ----------
+function gymRecent() { // distinct exercises, most recently done first (later rows of the same workout count as more recent)
+  const rows = (DATA?.gym || []).map((r, i) => ({ r, i })).filter(({ r }) => r.exercise);
+  rows.sort((a, b) => (b.r.date + ' ' + b.r.time).localeCompare(a.r.date + ' ' + a.r.time) || b.i - a.i);
+  return [...new Set(rows.map(({ r }) => r.exercise))];
+}
+const allExercises = () => { const rec = gymRecent(); return [...rec, ...[...new Set(allPlanned().map((p) => p.name))].filter((n) => !rec.includes(n))]; };
+function lastInfo(name) {
+  const rows = (DATA?.gym || []).filter((r) => r.exercise === name);
+  if (!rows.length) return null;
+  const d = rows.map((r) => r.date + ' ' + r.time).sort().pop();
+  return { date: d.slice(0, 10), sets: rows.filter((r) => r.date + ' ' + r.time === d).map((r) => ({ reps: Number(r.reps), kg: Number(r.kg) })) };
+}
+// "8/8/5 @ 35 kg" · mixed weights: "6 @ 30 · 8/5 @ 25 kg" · bodyweight: "7/5 reps"
+function fmtLast(info, withDate = true) {
+  if (!info) return 'first time';
+  const s = info.sets, groups = [];
+  if (s.every((x) => !x.kg)) return (withDate ? `last time (${dm(info.date)}): ` : '') + s.map((x) => x.reps).join('/') + ' reps';
+  for (const x of s) { const g = groups[groups.length - 1]; if (g && g.kg === x.kg) g.reps.push(x.reps); else groups.push({ kg: x.kg, reps: [x.reps] }); }
+  return (withDate ? `last time (${dm(info.date)}): ` : '') + groups.map((g) => `${g.reps.join('/')} @ ${kg(g.kg)}`).join(' · ') + ' kg';
+}
+const fold = (t) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ß/g, 'ss');
+// el: container · skip: names to leave out · onPick(name) · allowNew: offer "add as new" · current: highlighted · compact: smaller buttons, no date
+function exPicker(el, { skip = [], onPick, allowNew = true, current = null, compact = false, n = 8 }) {
+  const names = allExercises().filter((x) => !skip.includes(x));
+  const btn = (name) => { const info = lastInfo(name);
+    return `<button type="button" class="exp-b${name === current ? ' on' : ''}" data-ex="${esc(name)}"><b>${esc(name)}</b><small>${info ? `${dm(info.date)} · ${fmtLast(info, false)}` : 'never logged'}</small></button>`; };
+  el.innerHTML = `<div class="exp${compact ? ' compact' : ''}"><div class="exp-grid exp-recent">${names.slice(0, n).map(btn).join('')}</div>
+    <input type="search" class="exp-q" placeholder="${allowNew ? 'Search all, or type a new one…' : 'Search all exercises…'}" autocomplete="off" enterkeyhint="done">
+    <div class="exp-grid exp-res"></div></div>`;
+  const q = el.querySelector('.exp-q'), res = el.querySelector('.exp-res'), rec = el.querySelector('.exp-recent');
+  const wire = (root) => root.querySelectorAll('[data-ex]').forEach((b) => b.addEventListener('click', () => onPick(b.dataset.ex)));
+  const draw = () => {
+    const t = fold(q.value.trim());
+    rec.hidden = !!t;
+    if (!t) { res.innerHTML = ''; return; }
+    const hits = names.filter((x) => fold(x).includes(t));
+    const exact = allExercises().some((x) => fold(x) === t);
+    res.innerHTML = hits.map(btn).join('') + (allowNew && !exact ? `<button type="button" class="exp-b exp-new" data-new="1"><b>＋ Add “${esc(q.value.trim())}”</b><small>new exercise</small></button>` : '')
+      + (!hits.length && !allowNew ? '<p class="sub">No match.</p>' : '');
+    wire(res);
+    res.querySelector('[data-new]')?.addEventListener('click', () => onPick(q.value.trim()));
+  };
+  q.addEventListener('input', draw);
+  q.addEventListener('keydown', (e) => { if (e.key !== 'Enter') return; e.preventDefault(); const b = res.querySelector('button'); b?.click(); });
+  wire(rec);
+}
+window.exPicker = exPicker; window.gymRecent = gymRecent;
 
 function openGym() {
   const wo = LS.get('workout', null);
@@ -446,7 +493,9 @@ function openGym() {
     openSheet('Gym', `
       <p>Which workout?</p>
       <div class="pick"><button data-w="A">A</button><button data-w="B">B</button><button data-w="free">Free</button></div>
-      <p class="sub">A: ${planOf('A').map((p) => esc(p.name)).join(' · ')}<br>B: ${planOf('B').map((p) => esc(p.name)).join(' · ')}</p>`, (r) => {
+      <p class="sub">A: ${planOf('A').map((p) => esc(p.name)).join(' · ')}<br>B: ${planOf('B').map((p) => esc(p.name)).join(' · ')}</p>
+      <button id="g-hist">📈 History + progress</button>`, (r) => {
+      r.querySelector('#g-hist').addEventListener('click', () => openDetail('gym'));
       r.querySelectorAll('[data-w]').forEach((b) => b.addEventListener('click', () => {
         LS.set('workout', { start: Date.now(), type: b.dataset.w, sets: {}, list: planOf(b.dataset.w).map((p) => p.name) });
         renderToday(); openGym();
@@ -454,8 +503,7 @@ function openGym() {
     });
     return;
   }
-  const known = [...new Set([...allPlanned().map((p) => p.name), ...(DATA?.gym || []).map((r) => r.exercise)])].filter((n) => !wo.list.includes(n));
-  const mins = Math.round((Date.now() - wo.start) / 60e3);
+  const mins = Math.round((Date.now() - wo.start) / 60e3), dur = wo.dur ?? Math.max(1, mins);
   const total = Object.values(wo.sets).reduce((n, s) => n + s.length, 0);
   openSheet(`Workout ${wo.type === 'free' ? '' : wo.type} · ${mins} min`, `
     ${wo.list.map((name, i) => {
@@ -464,21 +512,22 @@ function openGym() {
       const h = hint(name);
       return `<section class="ex">
         <div class="ex-head"><b>${esc(name)}</b><span class="sub">${p ? `${p.sets} × ${p.reps[0]}${p.reps[1] !== p.reps[0] ? '–' + p.reps[1] : ''}` : ''}</span></div>
-        <div class="sub">${last ? 'last: ' + fmtSets(last) : 'first time'} ${h ? `<span class="good">${h}</span>` : ''}</div>
+        <div class="sub">${fmtLast(lastInfo(name))} ${h ? `<span class="good">${h}</span>` : ''}</div>
         ${done.length ? `<ol class="sets">${done.map((s, j) => `<li>${s.reps} × ${kg(s.kg)} kg <button class="x" data-del="${i}:${j}" aria-label="Delete set">✕</button></li>`).join('')}</ol>` : ''}
         <div class="set-row">${stepper('reps' + i, next.reps, 1, 'reps')}${p?.bodyweight ? `<input id="kg${i}" type="hidden" value="0">` : stepper('kg' + i, kg(h && !done.length ? (p.assist ? next.kg - (CFG.kgStep || 2.5) : next.kg + (CFG.kgStep || 2.5)) : next.kg), CFG.kgStep || 2.5, 'kg')}
         <button class="primary small" data-add="${i}">+ Set</button></div>
       </section>`;
     }).join('')}
-    <div class="add-ex">
-      <select id="g-known"><option value="">Add exercise…</option>${known.map((n) => `<option>${esc(n)}</option>`).join('')}</select>
-      <input id="g-new" type="text" placeholder="or a new one">
-      <button id="g-add">Add</button>
-    </div>
+    <h3>${wo.list.length ? 'Add exercise' : 'Pick an exercise'}</h3>
+    <div id="g-pick"></div>
+    <h3>Duration</h3>
+    ${stepper('g-dur', dur, 5, 'min')}
+    <p class="sub">Running since ${clock(wo.start)}. Fix it if you forgot to stop; saved with the workout.</p>
     <button class="primary" id="g-finish">Finish workout · ${total} set${total === 1 ? '' : 's'}</button>
     <button id="g-discard" class="ghost">Discard workout</button>`, (r) => {
     wireSteppers(r);
-    const put = (w) => { const y = sheet().scrollTop; LS.set('workout', w); openGym(); sheet().scrollTop = y; };
+    // keep a hand-fixed duration across re-renders
+    const put = (w) => { const d = Number(r.querySelector('#g-dur').value); if (d && d !== dur) w.dur = d; const y = sheet().scrollTop; LS.set('workout', w); openGym(); sheet().scrollTop = y; };
     r.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
       const i = b.dataset.add, name = wo.list[i];
       (wo.sets[name] ||= []).push({ reps: Number(r.querySelector('#reps' + i).value) || 0, kg: Number(r.querySelector('#kg' + i).value) || 0 });
@@ -487,17 +536,23 @@ function openGym() {
     r.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
       const [i, j] = b.dataset.del.split(':').map(Number); wo.sets[wo.list[i]].splice(j, 1); put(wo);
     }));
-    r.querySelector('#g-add').addEventListener('click', () => {
-      const n = (r.querySelector('#g-new').value.trim() || r.querySelector('#g-known').value).trim();
-      if (n && !wo.list.includes(n)) { wo.list.push(n); put(wo); }
-    });
+    exPicker(r.querySelector('#g-pick'), { skip: wo.list, onPick: (n) => {
+      if (!n || wo.list.includes(n)) return;
+      wo.list.push(n); put(wo);
+      sheet().querySelectorAll('.ex')[wo.list.length - 1]?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } });
     r.querySelector('#g-finish').addEventListener('click', () => {
       const date = dayKey(wo.start), time = clock(wo.start), rows = [];
       for (const name of wo.list) (wo.sets[name] || []).forEach((s, j) => rows.push([date, time, wo.type, name, j + 1, s.reps, kg(s.kg), '']));
       if (!rows.length) { toast('No sets logged yet'); return; }
+      // duration rides in the first row's note ("session 58 min"), so the CSV header stays the same
+      // untouched field = real elapsed time now (the field only shows the minutes from the last redraw)
+      const v = Number(r.querySelector('#g-dur').value) || 0;
+      const m = Math.round(wo.dur == null && v === dur ? Math.max(1, (Date.now() - wo.start) / 60e3) : v);
+      if (m > 0) rows[0][7] = `session ${m} min`;
       const ex = new Set(rows.map((x) => x[3])).size;
       LS.remove('workout');
-      stage({ kind: 'gym', op: 'add', rows, label: `gym ${wo.type} · ${ex} exercise${ex === 1 ? '' : 's'}, ${rows.length} sets`, marks: { gym: true } });
+      stage({ kind: 'gym', op: 'add', rows, label: `gym ${wo.type} · ${ex} exercise${ex === 1 ? '' : 's'}, ${rows.length} sets${m > 0 ? `, ${m} min` : ''}`, marks: { gym: true } });
       closeSheet();
     });
     const disc = r.querySelector('#g-discard');
