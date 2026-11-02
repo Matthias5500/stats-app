@@ -18,6 +18,7 @@ function applyTheme() {
 applyTheme();
 
 const H = 3600e3;
+const APP_V = 'v12'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
@@ -112,6 +113,7 @@ function studyTime(timeFiles, tagsText) {
   return out;
 }
 
+const LOG_V = 2; // bump when dayLog() returns new fields → every cached day log gets parsed again once
 function dayLog(text) {
   const life = (text.split('## Life')[1] || '').split('\n## ')[0];
   const r = { floss: false, gym: false, run: false, asleep: null };
@@ -131,6 +133,8 @@ function dayLog(text) {
   const study = (text.split('## Study')[1] || '').split('\n## ')[0];
   const marks = [...study.matchAll(/Streak:\W*(earned|frozen|not earned)/gi)].map((m) => m[1].toLowerCase());
   r.streak = marks.includes('earned') ? 'earned' : marks.includes('frozen') ? 'frozen' : marks.length ? 'no' : study.trim() ? 'earned' : 'no';
+  // top-level ## Study bullets (what he did), shown when he taps that day's study bar
+  r.studyItems = study.split('\n').filter((l) => /^- /.test(l) && !/^-\s*Streak:/i.test(l)).slice(0, 12).map((l) => { const t = strip(l.slice(2)); return t.length > 220 ? t.slice(0, 220) + '…' : t; });
   return r;
 }
 
@@ -190,9 +194,9 @@ async function load(range) {
   }
   const parsedLogs = await Promise.all(logFiles.map(async (f) => {
     const c = LS.get('log:' + f.name, null);
-    if (c && c.sha === f.sha) return c.r;
+    if (c && c.sha === f.sha && c.v === LOG_V) return c.r;
     const r = dayLog(await ghRaw(F('logDir') + '/' + f.name));
-    LS.set('log:' + f.name, { sha: f.sha, r });
+    LS.set('log:' + f.name, { sha: f.sha, v: LOG_V, r });
     return r;
   }));
 
@@ -251,7 +255,7 @@ function bars(values, { max, min = 0, ref, cls, hollow } = {}) {
     const c = cls ? cls(v, i) : 'var(--accent)', yy = Math.min(y(v), Hh - 2);
     s += hollow && hollow(i)
       ? `<rect pointer-events="none" x="${x + .75}" y="${yy}" width="${w - 1.5}" height="${Hh - yy}" rx="${rx}" fill="none" stroke="${c}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`
-      : `<rect class="bar" style="animation-delay:${Math.min(i, 30) * 25}ms" pointer-events="none" x="${x}" y="${yy}" width="${w}" height="${Hh - yy}" rx="${rx}" fill="${paint(c)}"/>`;
+      : `<rect class="bar" data-b="${i}" style="animation-delay:${Math.min(i, 30) * 25}ms" pointer-events="none" x="${x}" y="${yy}" width="${w}" height="${Hh - yy}" rx="${rx}" fill="${paint(c)}"/>`;
   });
   if (ref != null) s += `<line x1="0" x2="${W}" y1="${y(ref)}" y2="${y(ref)}" stroke="var(--muted)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>`;
   return s + '</svg>';
@@ -299,14 +303,13 @@ function weekBars(weeks, sessions) {
 }
 // muscle groups: exact names first (his own spellings), then keywords for new exercises, else "Other"
 const MUSCLES = ['Chest', 'Shoulders', 'Triceps', 'Back', 'Biceps', 'Legs', 'Core', 'Other'];
-const MUSCLE_OF = {
-  'Schrägbank': 'Chest', 'Chest fly': 'Chest', 'Bench / chest press': 'Chest',
-  'Shoulder press': 'Shoulders', 'Seithebemaschiene': 'Shoulders', 'Lateral raise machine': 'Shoulders', 'Overhead press (DB)': 'Shoulders',
-  'Cheat press down machine?': 'Triceps',
-  'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back', 'Lat pulldown': 'Back',
+const MUSCLE_OF = { // only names he has actually logged; anything else goes through MUSCLE_RULES
+  'Schrägbank': 'Chest', 'Chest fly': 'Chest', 'Dip machine (seated)': 'Chest', // seated dip machine, pressed down in front = chest (his call, 2026-11-02)
+  'Shoulder press': 'Shoulders', 'Lateral raise machine': 'Shoulders',
+  'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back',
   'Preacher curls': 'Biceps',
-  'Squat / leg press': 'Legs', 'Leg press': 'Legs', 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs', 'Romanian deadlift': 'Legs',
-  'Decline weighted situps': 'Core', 'Back extensions': 'Core', 'Plank (seconds)': 'Core', 'Hanging knee raises': 'Core',
+  'Squat / leg press': 'Legs', 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
+  'Decline weighted situps': 'Core', 'Back extensions': 'Core',
 };
 const MUSCLE_RULES = [ // order matters: "leg curl" is legs, "back extension" is core
   ['Legs', /leg|squat|calf|wade|adduct|abduct|lunge|ausfallschritt|deadlift|kreuzheben|glute|hip thrust|kniebeug|beinpress|beinstreck|beinbeug|step.?up/],
@@ -440,7 +443,9 @@ const CARDS = [
         }));
         el.querySelectorAll('.cal-nav').forEach((b) => b.addEventListener('click', () => {
           const d = new Date(month + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + Number(b.dataset.nav));
-          calMonth = d.toISOString().slice(0, 7); render();
+          calMonth = d.toISOString().slice(0, 7);
+          // inside a detail sheet (tile / list / tap): redraw that sheet; render() only redraws the main view (bug until 2026-11-02)
+          if (el.closest('#sheet')) { const y = sheet().scrollTop; openDetail('streak'); sheet().scrollTop = y; render(); } else render();
         }));
       } };
   } },
@@ -459,7 +464,23 @@ const CARDS = [
     return { big: tot.toFixed(1), unit: 'h',
       sub: x.prev.length ? `<span class="${tot >= prev ? 'good' : 'bad'}">${sign(tot - prev)} h vs before</span> · best day ${(Math.max(0, ...m.filter(Boolean)) / 60).toFixed(1)} h` : `best day ${(Math.max(0, ...m.filter(Boolean)) / 60).toFixed(1)} h`,
       chart: bars(m),
-      tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${((d.study || 0) / 60).toFixed(1)} h study · ${Math.round(d.chat || 0)} min chat`; } };
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${((d.study || 0) / 60).toFixed(1)} h study · ${Math.round(d.chat || 0)} min chat`; },
+      html: '<div class="study-day"></div>',
+      // tap a bar → that day's courses (time tracking) + what he did (## Study of the day log), bar highlighted
+      wire(el) {
+        const svg = el.querySelector('svg.chart'), box = el.querySelector('.study-day');
+        if (!svg || !box) return;
+        const show = (i) => {
+          const k = x.dates[i], d = x.days[k] || {};
+          el.querySelectorAll('.detail').forEach((dd) => (dd.hidden = true)); // the panel replaces the one-line summary
+          svg.classList.add('has-sel'); svg.querySelectorAll('rect.bar').forEach((b) => b.classList.toggle('sel', Number(b.dataset.b) === i));
+          const crs = Object.entries(d.courses || {}).filter(([, mm]) => mm >= 1).sort((a, b) => b[1] - a[1]);
+          box.innerHTML = `<h3 class="dh">${short(k)}</h3>`
+            + (crs.length ? `<p class="sub">${crs.map(([c, mm]) => `${esc(c)} ${(mm / 60).toFixed(1)} h`).join(' · ')}</p>` : '')
+            + (d.studyItems?.length ? `<ul class="study-items">${d.studyItems.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : `<p class="sub">${d.logged ? 'Nothing under ## Study that day.' : 'No day log for this day.'}</p>`);
+        };
+        svg.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) show(Number(i)); });
+      } };
   } },
   { id: 'piano', title: 'Piano', render(x) {
     const m = x.dates.map((k) => x.days[k]?.piano || null);
@@ -862,7 +883,7 @@ async function refresh() {
     DATA = await load(range === 'all' ? 'all' : Math.max(range, 30));
     LS.set('last', DATA);
     if (!tab) showTab(DATA.update?.generated && DATA.update.generated !== LS.get('seenUpdate', null) ? 'update' : 'stats');
-    $('#status').textContent = 'Updated ' + new Date(DATA.fetched).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    $('#status').textContent = 'Updated ' + new Date(DATA.fetched).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + ' · app ' + APP_V;
   } catch (e) {
     $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : (e instanceof TypeError ? 'Offline or GitHub unreachable' : 'Couldn’t load') + ', showing the last data: ' + e.message;
   }
@@ -934,4 +955,16 @@ DATA = LS.get('last', null);
 if (DATA?.cfg) { CFG = DATA.cfg; fmtKey = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }); }
 showTab(LS.get('tab', 'stats') === 'update' ? 'update' : 'stats'); tab = null; // real choice once fresh data is in
 refresh();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+// ---------- app updates ----------
+// The phone keeps the PWA alive in memory, so "reopening" only resumes the old page. On every resume ask for a new sw.js;
+// when a new worker takes over, reload once (later if a sheet is open, so a half-typed log isn't lost; workouts live in localStorage anyway).
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloadPending = false;
+  const reloadNow = () => { if (!reloadPending) return; if (!$('#sheet').hidden || !$('#settings').hidden || !$('#setup').hidden) return; reloadPending = false; location.reload(); };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (!hadController) return; reloadPending = true; reloadNow(); });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { reg.update().catch(() => {}); reloadNow(); } });
+  }).catch(() => {});
+  new MutationObserver(reloadNow).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['hidden'] });
+}

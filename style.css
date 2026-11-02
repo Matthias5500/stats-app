@@ -320,3 +320,9 @@ body { padding-bottom: 90px; }
 .exp-g .exp-grid { padding: 0 8px 8px; }
 .exp-b.sm { min-height: 0; padding: 9px 10px; }
 .exp-b.sm b { font-size: 14px; }
+/* round 3: study bar → that day's panel */
+.chart.has-sel rect.bar:not(.sel) { opacity: .35; }
+.chart rect.bar.sel { opacity: 1; }
+.study-day:empty { display: none; }
+.study-items { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; line-height: 1.35; }
+.study-items li { overflow-wrap: anywhere; }

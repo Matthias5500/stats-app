@@ -444,7 +444,8 @@ function gymRecent() { // distinct exercises, most recently done first (later ro
   rows.sort((a, b) => (b.r.date + ' ' + b.r.time).localeCompare(a.r.date + ' ' + a.r.time) || b.i - a.i);
   return [...new Set(rows.map(({ r }) => r.exercise))];
 }
-const allExercises = () => { const rec = gymRecent(); return [...rec, ...[...new Set(allPlanned().map((p) => p.name))].filter((n) => !rec.includes(n))]; };
+// only exercises he has actually logged (plan names from stats.json are never listed)
+const allExercises = () => gymRecent();
 function lastInfo(name) {
   const rows = (DATA?.gym || []).filter((r) => r.exercise === name);
   if (!rows.length) return null;
@@ -493,13 +494,12 @@ window.exPicker = exPicker; window.gymRecent = gymRecent;
 function openGym() {
   const wo = LS.get('workout', null);
   if (!wo) {
+    // no A/B plan lists any more: every workout starts empty and he picks what he actually does (workout column = "free")
     openSheet('Gym', `
-      <p>Which workout?</p>
-      <div class="pick"><button data-w="A">A</button><button data-w="B">B</button><button data-w="free">Free</button></div>
-      <p class="sub">A: ${planOf('A').map((p) => esc(p.name)).join(' · ')}<br>B: ${planOf('B').map((p) => esc(p.name)).join(' · ')}</p>
-`, (r) => {
+      <button class="primary big-btn" data-w="free">▶ Start workout</button>
+      <p class="sub">Starts the timer. Pick exercises as you go.</p>`, (r) => {
       r.querySelectorAll('[data-w]').forEach((b) => b.addEventListener('click', () => {
-        LS.set('workout', { start: Date.now(), type: b.dataset.w, sets: {}, list: planOf(b.dataset.w).map((p) => p.name) });
+        LS.set('workout', { start: Date.now(), type: b.dataset.w, sets: {}, list: [] });
         renderToday(); openGym();
       }));
     });
