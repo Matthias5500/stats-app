@@ -400,3 +400,29 @@ body { padding-bottom: 90px; }
 .drag-ph { background: transparent !important; border: 2px dashed var(--line) !important; box-shadow: none !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 @media (prefers-reduced-motion: reduce) { .lifted { transition: none; } }
 .st tr.best td.prev { font-weight: 400; }
+
+/* ---------- graph tab ---------- */
+body.graph-on { max-width: none; padding-bottom: 0; }
+body.graph-on .top { max-width: none; }
+.graph { display: grid; grid-template-rows: auto auto 1fr; gap: 8px; height: calc(100dvh - 100px - env(safe-area-inset-top, 0px)); min-height: 320px; }
+.g-bar { display: flex; gap: 6px; }
+.g-search { flex: 1; min-width: 0; font: inherit; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+.g-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.g-chips .chip { white-space: nowrap; cursor: pointer; }
+.g-chips .chip small { color: var(--muted); }
+.g-chips .chip.off { opacity: .4; text-decoration: line-through; }
+.g-stage { position: relative; min-height: 0; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; background: var(--card); }
+.g-stage canvas { display: block; touch-action: none; cursor: grab; }
+.g-legend { position: absolute; left: 10px; bottom: 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+.g-legend .muted { color: var(--muted); }
+.g-list { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; }
+.g-claim { font-size: 16px; color: var(--fg) !important; line-height: 1.4; }
+.g-slider { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; }
+.g-slider input { grid-column: 1 / -1; width: 100%; padding: 0 !important; }
+.g-check { display: flex; gap: 8px; align-items: center; }
+.g-check input { width: 20px !important; height: 20px; }
+.g-depth { grid-template-columns: repeat(3, 1fr); }
+
+.chip.muted { color: var(--muted); }
+[data-theme=glass] .g-stage { background: rgba(255,255,255,.03); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+[data-theme=glass] .g-search { background: rgba(255,255,255,.06); }

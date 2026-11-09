@@ -6,3 +6,5 @@ The data repo needs a `stats.json` at its root (file paths, goals, time zone). I
 
 ## Credits
 Body outline polygons (muscle icons + muscle heatmap, `body.js`) come from [react-body-highlighter](https://github.com/GV79/react-body-highlighter) by GV79, MIT License, Copyright (c) 2020 GV79. Coordinates rounded; the full license notice is at the top of `body.js`.
+
+The **Graph** tab draws the data repo's concept notes (`<graphRoot>/*/graph/**/*.md`) as one zoomable graph. Layout uses [d3-force](https://github.com/d3/d3-force) v3 with d3-dispatch, d3-quadtree and d3-timer (`vendor/d3-force.min.js`, ISC License, Copyright 2010-2021 Mike Bostock); the canvas renderer is this repo's own code.

@@ -15,6 +15,7 @@
   <div class="tabs" role="tablist" aria-label="View">
     <button data-tab="update" role="tab">Update</button>
     <button data-tab="stats" role="tab">Stats</button>
+    <button data-tab="graph" role="tab">Graph</button>
   </div>
   <div class="range" role="group" aria-label="Time range">
     <button data-range="7" class="on">7d</button>
@@ -28,6 +29,7 @@
 <section id="update" class="update" aria-label="Daily update" hidden></section>
 <section id="today" class="today" aria-label="Today"></section>
 <main id="cards" class="cards"></main>
+<section id="graph" class="graph" aria-label="Concept graph" hidden></section>
 <section id="sheet" class="sheet" hidden></section>
 <div id="toast" class="toast" role="status" hidden></div>
 
@@ -59,8 +61,10 @@
   <button id="change-token">Change token</button>
   <button id="close-settings" class="primary">Done</button>
 </section>
+<script src="vendor/d3-force.min.js"></script>
 <script src="body.js"></script>
 <script src="app.js"></script>
 <script src="log.js"></script>
+<script src="graph.js"></script>
 </body>
 </html>

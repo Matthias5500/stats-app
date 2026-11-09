@@ -18,7 +18,7 @@ function applyTheme() {
 applyTheme();
 
 const H = 3600e3;
-const APP_V = 'v13'; // shown in the status line; bump together with SHELL in sw.js
+const APP_V = 'v14'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
@@ -871,6 +871,8 @@ function showTab(t) {
   document.querySelectorAll('.tabs button').forEach((b) => { const on = b.dataset.tab === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
   $('#update').hidden = t !== 'update';
   $('#cards').hidden = $('#today').hidden = $('.range').hidden = t !== 'stats';
+  $('#graph').hidden = t !== 'graph';
+  document.body.classList.toggle('graph-on', t === 'graph');
   render();
 }
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
@@ -926,6 +928,7 @@ function fullCard(def, r, ctx) {
 function render() {
   if (!DATA) return;
   if (tab === 'update') { renderUpdate(); return; }
+  if (tab === 'graph') { window.renderGraph?.(); return; }
   window.renderToday?.();
   const ctx = ctxFor(), off = hidden(), mode = layout(), big = bigSet();
   const root = $('#cards'); root.textContent = ''; root.className = 'cards layout-' + mode;
@@ -1053,7 +1056,7 @@ async function refresh() {
   } catch (e) {
     $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : (e instanceof TypeError ? 'Offline or GitHub unreachable' : 'Couldn’t load') + ', showing the last data: ' + e.message;
   }
-  if (!tab) showTab(LS.get('tab', 'stats') === 'update' ? 'update' : 'stats');
+  if (!tab) showTab(['update', 'graph'].includes(LS.get('tab', 'stats')) ? LS.get('tab', 'stats') : 'stats');
   render();
 }
 
@@ -1119,7 +1122,7 @@ $('#close-settings').addEventListener('click', () => { $('#settings').hidden = t
 
 DATA = LS.get('last', null);
 if (DATA?.cfg) { CFG = DATA.cfg; fmtKey = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }); }
-showTab(LS.get('tab', 'stats') === 'update' ? 'update' : 'stats'); tab = null; // real choice once fresh data is in
+{ const t0 = ['update', 'graph'].includes(LS.get('tab', 'stats')) ? LS.get('tab', 'stats') : 'stats'; showTab(t0); tab = t0 === 'graph' ? 'graph' : null; } // real choice once fresh data is in (the graph tab stays put)
 refresh();
 // ---------- app updates ----------
 // The phone keeps the PWA alive in memory, so "reopening" only resumes the old page. On every resume ask for a new sw.js;
