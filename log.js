@@ -229,7 +229,7 @@ function openEntries() {
   const days = [nowKey(), addDays(nowKey(), -1)];
   const pick = (rows) => (rows || []).filter((r) => days.includes(r.date));
   const list = [
-    ...pick(DATA.habits).map((r) => ({ kind: 'habits', match: r, label: r.habit === 'asleep' ? `goodnight ${r.value}` : r.habit === 'awake' ? `awake ${r.value}` : /^(mood|energy)$/.test(r.habit) ? `${r.habit} ${r.value}/5` : (MOUTH[r.habit] || CHORES[r.habit] || r.habit), marks: r.habit === 'floss' ? { floss: false } : {} })),
+    ...pick(DATA.habits).map((r) => ({ kind: 'habits', match: r, label: r.habit === 'asleep' ? `goodnight ${r.value}` : r.habit === 'awake' ? `awake ${r.value}` : /^(mood|energy)$/.test(r.habit) ? `${r.habit} ${r.value}/5` : (r.habit === 'trash' && TRASH[r.value] ? TRASH[r.value] : MOUTH[r.habit] || CHORES[r.habit] || r.habit), marks: r.habit === 'floss' ? { floss: false } : {} })),
     ...pick(DATA.weightRows).map((r) => ({ kind: 'weight', match: r, label: `weight ${r.kg} kg` })),
     ...pick(DATA.runs).map((r) => ({ kind: 'runs', match: r, label: `run ${r.km} km`, marks: { run: false } })),
     ...pick(DATA.spendLog).map((r) => ({ kind: 'spend', match: r, label: `spend €${r.eur} ${r.what}` })),
@@ -389,7 +389,17 @@ function openHome() {
   openSheet('Household 🏠', `<p class="sub">Tap what you just did.</p><div class="ticks">${Object.entries(CHORES).map(([h, label]) => {
     const done = t.chores?.includes(h), g = last[h] ? daysBetween(last[h], nowKey()) : null;
     return `<button class="tick${done ? ' on' : ''}" data-h="${h}" ${done ? 'disabled' : ''}>${label}${done ? ' ✓' : ` <small>${g == null ? 'never logged' : g === 0 ? 'today' : g + ' d ago'}</small>`}</button>`; }).join('')}</div>`, (r) => {
-    r.querySelectorAll('[data-h]').forEach((b) => b.addEventListener('click', () => { habit(b.dataset.h, '1', noIcon(CHORES[b.dataset.h]).toLowerCase()); openHome(); }));
+    r.querySelectorAll('[data-h]').forEach((b) => b.addEventListener('click', () => { if (b.dataset.h === 'trash') return openTrash(); habit(b.dataset.h, '1', noIcon(CHORES[b.dataset.h]).toLowerCase()); openHome(); }));
+  });
+}
+// trash: one button per type, tap several in a row (each tap = one row 'trash,<type>')
+function openTrash() {
+  const today = nowKey(), ts = trashStats(DATA.habits, today), t = todayView();
+  const doneToday = new Set((t.trashToday || []));
+  openSheet('Trash 🗑️', `<p class="sub">Tap every type you just took out.</p><div class="ticks">${Object.entries(TRASH).map(([k, label]) => {
+    const on = doneToday.has(k) || ts[k]?.ago === 0, l = trashLine(ts[k]);
+    return `<button class="tick${on ? ' on' : ''}" data-t="${k}" ${on ? 'disabled' : ''}>${label}${on ? ' ✓' : ` <small class="${l.cls}">${l.txt}</small>`}</button>`; }).join('')}</div>`, (r) => {
+    r.querySelectorAll('[data-t]').forEach((b) => b.addEventListener('click', () => { habit('trash', b.dataset.t, 'trash ' + noIcon(TRASH[b.dataset.t]).replace(/ \(.*\)$/, '')); openTrash(); }));
   });
 }
 

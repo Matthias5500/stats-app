@@ -18,7 +18,7 @@ function applyTheme() {
 applyTheme();
 
 const H = 3600e3;
-const APP_V = 'v14'; // shown in the status line; bump together with SHELL in sw.js
+const APP_V = 'v15'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
@@ -140,6 +140,30 @@ function dayLog(text) {
 
 // one row of log/habits.csv (date,time,habit,value) into a day; the today bar uses it for unsaved rows too
 const CHORES = { dishes: '🍽️ Dishes', trash: '🗑️ Trash', floor: '🧹 Floor', laundry: '🧺 Laundry' };
+// trash = habit 'trash', value = type key (old rows with '1' = untyped, kept in history, no interval)
+const TRASH = { gelb: '🟡 Gelb (Plastik + Metall)', papier: '🔴 Papier', rest: '⚫ Restmüll', bio: '🟤 Bio', weissglas: '⚪ Weißglas', buntglas: '🟢 Buntglas', pfand: '♻️ Pfand' };
+// per type: last date, usual gap (mean of the last ≤5 gaps), due date; needs 2 distinct days for a gap
+function trashStats(habits, today) {
+  const out = {};
+  for (const k of Object.keys(TRASH)) {
+    const ds = [...new Set((habits || []).filter((r) => r.habit === 'trash' && r.value === k).map((r) => r.date))].sort();
+    if (!ds.length) { out[k] = null; continue; }
+    const last = ds[ds.length - 1], gaps = ds.slice(1).map((d, i) => daysBetween(ds[i], d)).slice(-5);
+    const every = gaps.length ? Math.max(1, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)) : null;
+    const due = every ? addDays(last, every) : null, ago = daysBetween(last, today);
+    out[k] = { last, ago, every, due, left: due ? daysBetween(today, due) : null };
+  }
+  return out;
+}
+const agoTxt = (g) => g === 0 ? 'today' : g === 1 ? 'yesterday' : g + ' d ago';
+// one line per type: 'Bio · 3 d ago · every ~6 d → due Fri 13 Nov'
+function trashLine(st) {
+  if (!st) return { txt: 'never logged', cls: '' };
+  if (!st.every) return { txt: `${agoTxt(st.ago)} · learning`, cls: '' };
+  const when = st.left < 0 ? `${-st.left} d overdue` : st.left === 0 ? 'due today' : `due ${short(st.due)}`;
+  return { txt: `${agoTxt(st.ago)} · every ~${st.every} d → ${when}`, cls: st.left < 0 ? 'bad' : st.left <= 1 ? 'warn' : 'good' };
+}
+window.TRASH = TRASH; window.trashStats = trashStats; window.trashLine = trashLine;
 function habitInto(d, r) {
   const h = r.habit;
   if (h === 'floss') d.floss = true;
@@ -151,7 +175,7 @@ function habitInto(d, r) {
   else if (h === 'asleep' && r.value) d.asleep = r.value;
   else if (h === 'awake' && r.value) d.awake = r.value;
   else if ((h === 'mood' || h === 'energy') && Number(r.value)) d[h] = Number(r.value);
-  else if (CHORES[h]) d.chores = [...new Set([...(d.chores || []), h])];
+  else if (CHORES[h]) { d.chores = [...new Set([...(d.chores || []), h])]; if (h === 'trash' && TRASH[r.value]) d.trashToday = [...new Set([...(d.trashToday || []), r.value])]; }
 }
 const mouthCount = (d) => (d?.brushAm ? 1 : 0) + (d?.brushPm ? 1 : 0) + (d?.floss ? 1 : 0);
 const mouthDone = (d) => mouthCount(d) === 3;
@@ -785,7 +809,11 @@ const CARDS = [
     return { big: String(inR), unit: `chore${inR === 1 ? '' : 's'}`,
       sub: 'tap 🏠 Home when you did one',
       html: `<ul class="list">${Object.entries(CHORES).map(([h, label]) => { const g = last[h] ? daysBetween(last[h], x.today) : null;
-        return `<li><span>${label}</span><span class="${g == null || g >= 7 ? 'bad' : g >= 3 ? 'warn' : 'good'}">${g == null ? 'not logged yet' : g === 0 ? 'today' : g + ' d ago'}</span></li>`; }).join('')}</ul>` };
+        const row = `<li><span>${label}</span><span class="${g == null || g >= 7 ? 'bad' : g >= 3 ? 'warn' : 'good'}">${g == null ? 'not logged yet' : g === 0 ? 'today' : g + ' d ago'}</span></li>`;
+        if (h !== 'trash') return row;
+        const ts = trashStats(x.habits, x.today);
+        return row + Object.entries(TRASH).filter(([k]) => ts[k]).map(([k, l]) => { const t = trashLine(ts[k]);
+          return `<li><span>&nbsp;&nbsp;${l.replace(/ \(.*\)$/, '')}</span><span class="${t.cls}">${t.txt}</span></li>`; }).join(''); }).join('')}</ul>` };
   } },
   { id: 'exams', title: 'Coming up', render(x) {
     const next = x.deadlines.slice(0, 6);
@@ -1018,7 +1046,12 @@ const DETAILS = {
   caffeine: (x) => listHtml(back(x).filter((k) => x.days[k]?.caffeine).map((k) => { const t = [...x.days[k].cafTimes].sort((a, b) => (a < '04:00' ? '24' + a : a).localeCompare(b < '04:00' ? '24' + b : b));
     return [`${short(k)} · ${t.join(', ')}`, `${t.length} · latest ${t[t.length - 1]}`, t.some((v) => v >= '16:00' || v < '04:00') ? 'warn' : '']; })) || '<p class="sub">None logged.</p>',
   home: (x) => Object.entries(CHORES).map(([h, l]) => { const ds = (x.habits || []).filter((r) => r.habit === h).map((r) => r.date).sort().reverse().slice(0, 10);
-    return h3(l) + (ds.length ? `<p class="sub">${ds.map(short).join(' · ')}</p>` : '<p class="sub">never logged</p>'); }).join(''),
+    const base = h3(l) + (ds.length ? `<p class="sub">${ds.map(short).join(' · ')}</p>` : '<p class="sub">never logged</p>');
+    if (h !== 'trash') return base;
+    const ts = trashStats(x.habits, x.today);
+    return base + listHtml(Object.entries(TRASH).map(([k, tl]) => { const t = trashLine(ts[k]);
+      const hist = (x.habits || []).filter((r) => r.habit === 'trash' && r.value === k).map((r) => r.date).sort().reverse().slice(0, 6);
+      return [`${tl}${hist.length ? ' <small>' + hist.map(short).join(' · ') + '</small>' : ''}`, t.txt, t.cls]; })); }).join(''),
   mood: (x) => listHtml(back(x).filter((k) => x.days[k]?.mood || x.days[k]?.energy).map((k) => { const d = x.days[k], h = sleepLen(x, k);
     return [short(k), `mood ${d.mood ?? '—'} · energy ${d.energy ?? '—'}${h != null ? ` · slept ${h} h` : ''}`]; })) || '<p class="sub">Rate it at 😴 Night.</p>',
   money: (x) => h3('Last 10') + listHtml([...x.spends].filter((s) => s.date <= x.today).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10).map((s) => [`${short(s.date)} · ${esc(s.what)} <small>${esc(s.cat)}</small>`, `€${s.eur.toFixed(2)}`])),
