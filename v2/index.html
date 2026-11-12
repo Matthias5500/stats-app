@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1113">
+<title>Stats</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="tabs" role="tablist" aria-label="View">
+    <button data-tab="update" role="tab">Update</button>
+    <button data-tab="stats" role="tab">Stats</button>
+    <button data-tab="graph" role="tab">Graph</button>
+  </div>
+  <div class="range" role="group" aria-label="Time range">
+    <button data-range="7" class="on">7d</button>
+    <button data-range="30">30d</button>
+    <button data-range="all">All</button>
+  </div>
+  <button id="refresh" class="icon-btn" aria-label="Refresh">↻</button>
+  <button id="open-settings" class="icon-btn" aria-label="Settings">⚙</button>
+</header>
+<p id="status" class="status"></p>
+<section id="update" class="update" aria-label="Daily update" hidden></section>
+<section id="today" class="today" aria-label="Today"></section>
+<main id="cards" class="cards"></main>
+<section id="graph" class="graph" aria-label="Concept graph" hidden></section>
+<section id="sheet" class="sheet" hidden></section>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<section id="setup" class="sheet" hidden>
+  <h2>Connect your repo</h2>
+  <p>Paste a GitHub fine-grained token with <b>Contents: Read and write</b> on your data repo. It stays on this device only.</p>
+  <label for="token">Token</label>
+  <input id="token" type="password" autocomplete="off" placeholder="github_pat_…">
+  <label for="repo">Repo</label>
+  <input id="repo" type="text" placeholder="owner/repo" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button id="save-token" class="primary">Save + load</button>
+</section>
+
+<section id="settings" class="sheet" hidden>
+  <h2>Layout</h2>
+  <div id="layout-pick" class="layout-pick"></div>
+  <h2>Quick buttons</h2>
+  <p>Ticked = favourite, always on top (as many as you like). ✨ smart ones pop up by themselves when it's their moment; everything else sits behind ＋.</p>
+  <ul id="fav-list" class="card-list"></ul>
+  <h2>Cards</h2>
+  <p>Switch cards on/off and move them. Big/Small = full-width card or small tile in the Tiles layout.</p>
+  <ul id="card-list" class="card-list"></ul>
+  <h2>Theme</h2>
+  <div id="theme-pick" class="theme-pick">
+    <button data-pick="glass"><i></i>Glass</button>
+    <button data-pick="classic"><i></i>Classic</button>
+  </div>
+  <h2>Connection</h2>
+  <button id="change-token">Change token</button>
+  <button id="close-settings" class="primary">Done</button>
+</section>
+<script src="vendor/d3-force.min.js"></script>
+<script src="body.js"></script>
+<script src="app.js"></script>
+<script src="log.js"></script>
+<script src="graph.js"></script>
+</body>
+</html>

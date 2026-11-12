@@ -1,0 +1,1174 @@
+// Stats: reads a private repo straight from GitHub (token stays on this device) and parses it here.
+// log.js adds the quick-logs that write back to the repo.
+// Everything personal (file paths, goals, time zone) lives in stats.json inside that repo, not in this code.
+
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem('stats.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('stats.' + k, JSON.stringify(v)); } catch { /* full or blocked: skip cache */ } },
+  remove(k) { try { localStorage.removeItem('stats.' + k); } catch { /* ignore */ } },
+};
+
+// ---------- theme (glass = default, classic = the original look; picked in ⚙) ----------
+const THEME_COLOR = { glass: '#0b0c14', classic: '#0e1113' };
+const theme = () => LS.get('theme', 'glass');
+function applyTheme() {
+  document.documentElement.dataset.theme = theme();
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', THEME_COLOR[theme()] || THEME_COLOR.glass);
+}
+applyTheme();
+
+// localhost only: ?api=http://localhost:8791 points the app at tools/mock-github.py (tests never touch the real repo)
+const API = (['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).get('api')) || 'https://api.github.com';
+const H = 3600e3;
+const APP_V = 'v15'; // shown in the status line; bump together with SHELL in sw.js
+let CFG = {}; // loaded from stats.json in the data repo
+const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
+const F = (k) => CFG.files[k];
+
+// ---------- dates ----------
+let fmtKey;
+const dayKey = (ms) => fmtKey.format(new Date(ms - (CFG.dayStartHour || 0) * H));
+const addDays = (key, n) => { const d = new Date(key + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const span = (from, to) => { const out = []; for (let k = from; k <= to; k = addDays(k, 1)) out.push(k); return out; };
+const short = (key) => new Date(key + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const daysBetween = (a, b) => Math.round((new Date(b + 'T12:00:00Z') - new Date(a + 'T12:00:00Z')) / 864e5);
+
+// ---------- GitHub (ETag cache: unchanged files cost almost no data) ----------
+async function gh(path, json = false) {
+  const { token, repo } = LS.get('conn', {});
+  const cached = LS.get('cache:' + path, null);
+  const headers = { Authorization: 'Bearer ' + token, Accept: json ? 'application/vnd.github+json' : 'application/vnd.github.raw+json' };
+  if (cached && cached.etag) headers['If-None-Match'] = cached.etag;
+  const res = await fetch(`${API}/repos/${repo}/contents/${path}?ref=main`, { headers, cache: 'no-store' });
+  if (res.status === 304 && cached) return cached.body;
+  if (res.status === 404) return null;
+  if (res.status === 401 || res.status === 403) throw new Error('auth');
+  if (!res.ok) throw new Error('GitHub ' + res.status);
+  const body = await res.text();
+  LS.set('cache:' + path, { etag: res.headers.get('ETag'), body });
+  return body;
+}
+
+async function ghRaw(path) {
+  const { token, repo } = LS.get('conn', {});
+  const res = await fetch(`${API}/repos/${repo}/contents/${path}?ref=main`, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' });
+  if (res.status === 401 || res.status === 403) throw new Error('auth');
+  if (!res.ok) throw new Error('GitHub ' + res.status);
+  return res.text();
+}
+
+// ---------- parsers ----------
+function csv(text) {
+  if (!text) return [];
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += c;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  const head = rows.shift() || [];
+  return rows.filter((r) => r.length > 1).map((r) => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ''])));
+}
+
+function mdTable(text, after) {
+  // rows of the first markdown table after the heading `after` (or every table row if no heading)
+  let t = text || '';
+  if (after) { const i = t.indexOf(after); if (i < 0) return []; t = t.slice(i + after.length); const j = t.search(/\n#{1,3} /); if (j >= 0) t = t.slice(0, j); }
+  return t.split('\n').filter((l) => /^\|/.test(l) && !/^\|\s*-/.test(l))
+    .map((l) => l.replace(/^\||\|\s*$/g, '').split('|').map((c) => c.trim()));
+}
+
+const strip = (s) => s.replace(/\*\*|__|`/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim();
+
+function studyTime(timeFiles, tagsText) {
+  const tags = {};
+  const course = {};
+  for (const r of csv(tagsText)) { tags[r.session] = r.tag || 'study'; course[r.session] = r.course || ''; }
+  const bySession = {};
+  for (const text of timeFiles) for (const r of csv(text)) {
+    const t = Date.parse(r.ts); if (!r.session || isNaN(t)) continue;
+    (bySession[r.session] ||= []).push([t, r.event]);
+  }
+  const out = {};
+  for (const [sid, evs] of Object.entries(bySession)) {
+    const tag = tags[sid] || 'study', crs = course[sid] || 'other';
+    if ((CFG.skipTags || []).includes(tag)) continue;
+    evs.sort((a, b) => a[0] - b[0]);
+    let paused = false;
+    evs.forEach(([t, ev], i) => {
+      const d = (out[dayKey(t)] ||= { study: 0, chat: 0 });
+      if (i === 0) { paused = ev === 'brb'; return; }
+      if (paused && (ev === 'prompt' || ev === 'brb')) { paused = ev === 'brb'; return; }
+      paused = paused || ev === 'brb';
+      const gap = t - evs[i - 1][0];
+      if (gap < 20 * 60e3) {
+        const chat = tag === (CFG.chatTag || 'chat');
+        d[chat ? 'chat' : 'study'] += gap / 60e3;
+        if (!chat) (d.courses ||= {})[crs] = (d.courses[crs] || 0) + gap / 60e3;
+      }
+    });
+  }
+  return out;
+}
+
+const LOG_V = 2; // bump when dayLog() returns new fields → every cached day log gets parsed again once
+function dayLog(text) {
+  const life = (text.split('## Life')[1] || '').split('\n## ')[0];
+  const r = { floss: false, gym: false, run: false, asleep: null };
+  const no = /\b(no|plan|skipped|skip)\b/i;
+  for (const line of life.split('\n')) {
+    if (line.includes('🦷') && !/\bnot?\b|didn/i.test(line)) r.floss = true;
+    if (line.includes('🪥') && !/\bnot?\b|didn/i.test(line)) { if (/\bAM\b|morning/i.test(line)) r.brushAm = true; if (/\bPM\b|evening|night/i.test(line)) r.brushPm = true; }
+    if (line.includes('🏋') && !no.test(line.split('·')[0])) r.gym = true;
+    if (line.includes('🏃') && /\d+(\.\d+)? ?km/.test(line) && !no.test(line.split('·')[0])) r.run = true;
+    if (/^\s*-\s*😴/u.test(line) && !/^\s*-\s*😴\s*(Woke|Plan)/u.test(line)) {
+      const t = [...line.matchAll(/(?:really|actually) asleep ~?(\d{1,2}:\d{2})/g)];
+      const u = t.length ? t : [...line.matchAll(/(?:Asleep|Went to bed)\s*~?(\d{1,2}:\d{2})/g)];
+      if (u.length) r.asleep = u[u.length - 1][1].padStart(5, '0');
+    }
+  }
+  // streak (same rule as the daily update): "Streak: earned|frozen|not earned" in ## Study; no such line → earned if ## Study isn't empty
+  const study = (text.split('## Study')[1] || '').split('\n## ')[0];
+  const marks = [...study.matchAll(/Streak:\W*(earned|frozen|not earned)/gi)].map((m) => m[1].toLowerCase());
+  r.streak = marks.includes('earned') ? 'earned' : marks.includes('frozen') ? 'frozen' : marks.length ? 'no' : study.trim() ? 'earned' : 'no';
+  // top-level ## Study bullets (what he did), shown when he taps that day's study bar
+  r.studyItems = study.split('\n').filter((l) => /^- /.test(l) && !/^-\s*Streak:/i.test(l)).slice(0, 12).map((l) => { const t = strip(l.slice(2)); return t.length > 220 ? t.slice(0, 220) + '…' : t; });
+  return r;
+}
+
+// one row of log/habits.csv (date,time,habit,value) into a day; the today bar uses it for unsaved rows too
+const CHORES = { dishes: '🍽️ Dishes', trash: '🗑️ Trash', floor: '🧹 Floor', laundry: '🧺 Laundry' };
+// trash = habit 'trash', value = type key (old rows with '1' = untyped, kept in history, no interval)
+const TRASH = { gelb: '🟡 Gelb (Plastik + Metall)', papier: '🔴 Papier', rest: '⚫ Restmüll', bio: '🟤 Bio', weissglas: '⚪ Weißglas', buntglas: '🟢 Buntglas', pfand: '♻️ Pfand' };
+// per type: last date, usual gap (mean of the last ≤5 gaps), due date; needs 2 distinct days for a gap
+function trashStats(habits, today) {
+  const out = {};
+  for (const k of Object.keys(TRASH)) {
+    const ds = [...new Set((habits || []).filter((r) => r.habit === 'trash' && r.value === k).map((r) => r.date))].sort();
+    if (!ds.length) { out[k] = null; continue; }
+    const last = ds[ds.length - 1], gaps = ds.slice(1).map((d, i) => daysBetween(ds[i], d)).slice(-5);
+    const every = gaps.length ? Math.max(1, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)) : null;
+    const due = every ? addDays(last, every) : null, ago = daysBetween(last, today);
+    out[k] = { last, ago, every, due, left: due ? daysBetween(today, due) : null };
+  }
+  return out;
+}
+const agoTxt = (g) => g === 0 ? 'today' : g === 1 ? 'yesterday' : g + ' d ago';
+// one line per type: 'Bio · 3 d ago · every ~6 d → due Fri 13 Nov'
+function trashLine(st) {
+  if (!st) return { txt: 'never logged', cls: '' };
+  if (!st.every) return { txt: `${agoTxt(st.ago)} · learning`, cls: '' };
+  const when = st.left < 0 ? `${-st.left} d overdue` : st.left === 0 ? 'due today' : `due ${short(st.due)}`;
+  return { txt: `${agoTxt(st.ago)} · every ~${st.every} d → ${when}`, cls: st.left < 0 ? 'bad' : st.left <= 1 ? 'warn' : 'good' };
+}
+window.TRASH = TRASH; window.trashStats = trashStats; window.trashLine = trashLine;
+function habitInto(d, r) {
+  const h = r.habit;
+  if (h === 'floss') d.floss = true;
+  else if (h === 'brush_am') d.brushAm = true;
+  else if (h === 'brush_pm') d.brushPm = true;
+  else if (h === 'mouthwash') d.mouthwash = true;
+  else if (h === 'shower') d.showers = (d.showers || 0) + 1;
+  else if (h === 'caffeine') { d.caffeine = (d.caffeine || 0) + 1; d.cafTimes = [...(d.cafTimes || []), r.time]; }
+  else if (h === 'asleep' && r.value) d.asleep = r.value;
+  else if (h === 'awake' && r.value) d.awake = r.value;
+  else if ((h === 'mood' || h === 'energy') && Number(r.value)) d[h] = Number(r.value);
+  else if (CHORES[h]) { d.chores = [...new Set([...(d.chores || []), h])]; if (h === 'trash' && TRASH[r.value]) d.trashToday = [...new Set([...(d.trashToday || []), r.value])]; }
+}
+const mouthCount = (d) => (d?.brushAm ? 1 : 0) + (d?.brushPm ? 1 : 0) + (d?.floss ? 1 : 0);
+const mouthDone = (d) => mouthCount(d) === 3;
+window.habitInto = habitInto; window.mouthCount = mouthCount;
+
+const sleepHours = (t) => { if (!t) return null; const [h, m] = t.split(':').map(Number); return (h < 12 ? h + 24 : h) + m / 60; };
+const fmtClock = (x) => `${String(Math.floor(x) % 24).padStart(2, '0')}:${String(Math.round((x % 1) * 60) % 60).padStart(2, '0')}`;
+
+// ---------- load everything ----------
+async function load(range) {
+  const cfgText = await gh('stats.json');
+  if (!cfgText) {
+    // 404 also means "this token can't see the repo": tell those apart
+    const { token, repo } = LS.get('conn', {});
+    const r = await fetch(`${API}/repos/${repo}`, { headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
+    throw new Error(r.ok ? `no stats.json in ${repo}` : `token can't see ${repo}: check the token's repository access + Contents: Read`);
+  }
+  CFG = JSON.parse(cfgText);
+  fmtKey = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const today = dayKey(Date.now());
+  const listing = JSON.parse(await gh(F('logDir'), true) || '[]');
+  const names = listing.map((f) => f.name);
+  // every day log is needed for the streak; only files whose blob sha changed get downloaded, the parsed result is cached
+  const logFiles = listing.filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f.name));
+  const timeNames = names.filter((n) => /^time-.*\.csv$/.test(n) && F('logDir') + '/' + n !== F('timeTags'));
+
+  const [ratings, food, tags, deadlineText, money, tx, weightText, gymText, runText, habitText, spendText, pianoText, notesText, ...rest] = await Promise.all([
+    gh(F('ratings')), gh(F('food')), gh(F('timeTags')),
+    gh(F('deadlines')), gh(F('money')), gh(F('transactions')),
+    gh(F('weight')), gh(F('gym')), gh(F('runs')), gh(F('habits')), gh(F('spend')), F('piano') ? gh(F('piano')) : null, F('notes') ? gh(F('notes')) : null,
+    ...timeNames.map((n) => gh(F('logDir') + '/' + n)),
+  ]);
+  const timeFiles = rest;
+  // daily update (written by Claude as JSON) + its archive
+  let update = null, updateDates = [];
+  if (F('update')) {
+    const [u, arch] = await Promise.all([gh(F('update')), gh(F('updateArchive'), true)]);
+    try { update = u ? JSON.parse(u) : null; } catch { update = null; }
+    try { updateDates = JSON.parse(arch || '[]').map((f) => f.name).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n)).map((n) => n.slice(0, 10)).sort(); } catch { /* none yet */ }
+  }
+  const parsedLogs = await Promise.all(logFiles.map(async (f) => {
+    const c = LS.get('log:' + f.name, null);
+    if (c && c.sha === f.sha && c.v === LOG_V) return c.r;
+    const r = dayLog(await ghRaw(F('logDir') + '/' + f.name));
+    LS.set('log:' + f.name, { sha: f.sha, v: LOG_V, r });
+    return r;
+  }));
+
+  const days = {};
+  const day = (k) => (days[k] ||= { kcal: 0, protein: 0, meals: 0 });
+  for (const r of csv(ratings)) Object.assign(day(r.date), { score: Number(r.score), final: r.final === 'final', why: r.why });
+  const foodRows = csv(food);
+  for (const r of foodRows) { const d = day(r.date); d.kcal += Number(r.kcal) || 0; d.protein += Number(r.protein_g) || 0; d.meals++; }
+  for (const [k, v] of Object.entries(studyTime(timeFiles, tags))) Object.assign(day(k), v);
+  logFiles.forEach((f, i) => Object.assign(day(f.name.slice(0, 10)), parsedLogs[i], { logged: true }));
+
+  // app logs (CSV) count the same as the day logs
+  const gym = csv(gymText), runs = csv(runText);
+  for (const r of gym) day(r.date).gym = true;
+  for (const r of runs) day(r.date).run = true;
+  const piano = csv(pianoText);
+  for (const r of piano) day(r.date).piano = (day(r.date).piano || 0) + (Number(r.minutes) || 0);
+  const habits = csv(habitText), spendLog = csv(spendText);
+  for (const r of habits) habitInto(day(r.date), r);
+  const weightRows = csv(weightText);
+  const weights = weightRows.filter((r) => r.kg).map((r) => ({ date: r.date, kg: Number(r.kg), note: r.note || '' }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const deadlines = mdTable(deadlineText).map((c) => ({ c, m: (c[0] || '').match(/(\d{4}-\d{2}-\d{2})/) }))
+    .filter(({ c, m }) => m && c.length >= 5 && m[1] >= today && !/✅|\bdone\b/.test(c[c.length - 1]))
+    .map(({ c, m }) => ({ date: m[1], item: strip(c[1]).split(/ · |\(/)[0].trim(), course: strip(c[2]) }));
+
+  // spending: imported bank rows (CSV), then hand-logged markdown rows dated after the last import
+  const SKIP = /^(Own transfer|Investing|Income|Private transfers in)/;
+  const spends = [];
+  let lastImport = '';
+  for (const r of csv(tx)) { lastImport = r.date > lastImport ? r.date : lastImport; const e = Number(r.eur); if (e < 0 && !SKIP.test(r.category)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: -e }); }
+  for (const c of mdTable(money)) if (/^\d{4}-\d{2}-\d{2}$/.test(c[0]) && c.length >= 5 && c[0] > lastImport) {
+    const e = Number(c[4].replace(/[^\d.]/g, '')) * (/^\s*[+−-]/.test(c[4]) ? -1 : 1); // "+€" = money back
+    if (e) spends.push({ date: c[0], what: strip(c[1]), cat: strip(c[3]), eur: e });
+  }
+  for (const r of spendLog) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
+
+  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, foodRows, notes: csv(notesText), weightRows, cfg: CFG, fetched: Date.now() };
+}
+
+// ---------- tiny charts ----------
+// glass theme: the flat colours become gradients (+ a glow from style.css)
+const GLASS_PAINT = { 'var(--accent)': 'url(#g-accent)', 'var(--good)': 'url(#g-good)', 'var(--warn)': 'url(#g-warn)', 'var(--bad)': 'url(#g-bad)' };
+const GLASS_DEFS = `<defs>${[['accent', '#22d3ee', '#8b5cf6'], ['good', '#5eead4', '#22d3ee'], ['warn', '#fde68a', '#f59e0b'], ['bad', '#fda4af', '#f43f5e']]
+  .map(([id, a, b]) => `<linearGradient id="g-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient>`).join('')}</defs>`;
+function bars(values, { max, min = 0, ref, cls, hollow } = {}) {
+  const W = 300, Hh = 60, n = values.length, top = max ?? Math.max(1, ...values.filter((v) => v != null), ref || 0);
+  const bw = W / n, y = (v) => Hh - ((v - min) / (top - min)) * (Hh - 4);
+  const glass = theme() === 'glass', paint = (c) => (glass && GLASS_PAINT[c]) || c, rx = glass ? Math.min(4, bw * 0.3) : 2;
+  let s = `<svg class="chart" viewBox="0 0 ${W} ${Hh + 10}" preserveAspectRatio="none" role="img">${glass ? GLASS_DEFS : ''}`;
+  values.forEach((v, i) => {
+    const x = i * bw + bw * 0.15, w = Math.max(1, bw * 0.7);
+    s += `<rect data-i="${i}" x="${i * bw}" y="0" width="${bw}" height="${Hh}" fill="transparent"/>`;
+    if (v == null) { s += `<rect x="${x}" y="${Hh - 1}" width="${w}" height="1" fill="var(--line)"/>`; return; }
+    const c = cls ? cls(v, i) : 'var(--accent)', yy = Math.min(y(v), Hh - 2);
+    s += hollow && hollow(i)
+      ? `<rect pointer-events="none" x="${x + .75}" y="${yy}" width="${w - 1.5}" height="${Hh - yy}" rx="${rx}" fill="none" stroke="${c}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`
+      : `<rect class="bar" data-b="${i}" style="animation-delay:${Math.min(i, 30) * 25}ms" pointer-events="none" x="${x}" y="${yy}" width="${w}" height="${Hh - yy}" rx="${rx}" fill="${paint(c)}"/>`;
+  });
+  if (ref != null) s += `<line x1="0" x2="${W}" y1="${y(ref)}" y2="${y(ref)}" stroke="var(--muted)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>`;
+  return s + '</svg>';
+}
+
+// ---------- gym: one session per day, duration, weekly minutes, per-exercise progress ----------
+// Duration: the app writes "session N min" into the note of a workout's first row (gym-log.csv header unchanged).
+// Rows from before 2026-11-02 (or typed in by hand) have no duration → "time not tracked".
+const DUR_RE = /\bsession (\d+) min\b/;
+const dm = (key) => new Date(key + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const monOf = (k) => addDays(k, -((new Date(k + 'T12:00:00Z').getUTCDay() + 6) % 7));
+function gymSessions(rows) {
+  const by = {};
+  for (const r of rows || []) {
+    if (!r.date || !r.exercise) continue;
+    const s = (by[r.date] ||= { date: r.date, times: new Set(), types: new Set(), ex: {}, order: [], durs: {} });
+    s.times.add(r.time || ''); if (r.workout) s.types.add(r.workout);
+    if (!s.ex[r.exercise]) { s.ex[r.exercise] = []; s.order.push(r.exercise); }
+    const m = (r.note || '').match(DUR_RE);
+    if (m) s.durs[r.time] = Math.max(s.durs[r.time] || 0, Number(m[1]));
+    s.ex[r.exercise].push({ reps: Number(r.reps) || 0, kg: Number(r.kg) || 0, note: (r.note || '').replace(DUR_RE, '').replace(/^[\s,;·]+|[\s,;·]+$/g, '') });
+  }
+  return Object.values(by).map((s) => {
+    const times = [...s.times].sort(), known = times.filter((t) => s.durs[t] != null);
+    return { date: s.date, start: times[0], types: [...s.types], exercises: s.order.map((name) => ({ name, sets: s.ex[name] })),
+      sets: sum(s.order.map((n) => s.ex[n].length)), mins: known.length ? sum(known.map((t) => s.durs[t])) : null };
+  }).sort((a, b) => b.date.localeCompare(a.date));
+}
+function gymWeeks(sessions, today, n) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const mon = addDays(monOf(today), -7 * i), ss = sessions.filter((s) => s.date >= mon && s.date <= addDays(mon, 6));
+    out.push({ mon, n: ss.length, sets: sum(ss.map((s) => s.sets)), mins: sum(ss.map((s) => s.mins || 0)), unknown: ss.filter((s) => s.mins == null).length });
+  }
+  return out;
+}
+// minutes per week once timed workouts exist (weeks with untimed sessions = hollow, estimated at the median), else sets per week
+function weekBars(weeks, sessions) {
+  const timed = sessions.filter((s) => s.mins != null).map((s) => s.mins).sort((a, b) => a - b);
+  const med = timed.length ? timed[Math.floor((timed.length - 1) / 2)] : 0;
+  const v = weeks.map((w) => (w.n ? (timed.length ? w.mins + w.unknown * med : w.sets) : null));
+  return { timed: timed.length > 0, med, chart: bars(v, { hollow: (i) => timed.length > 0 && weeks[i].unknown > 0 }),
+    tap: (i) => { const w = weeks[Math.min(i, weeks.length - 1)];
+      return `Week of ${dm(w.mon)}: ${w.n ? `${w.n} session${w.n === 1 ? '' : 's'} · ${w.sets} sets · ${w.mins ? w.mins + ' min' : ''}${w.unknown ? `${w.mins ? ' + ' : ''}${w.unknown} untimed` : ''}` : 'no gym'}`; } };
+}
+// muscle groups: exact names first (his own spellings), then keywords for new exercises, else "Other"
+const MUSCLES = ['Chest', 'Shoulders', 'Triceps', 'Back', 'Biceps', 'Legs', 'Core', 'Other'];
+const MUSCLE_OF = { // only names he has actually logged; anything else goes through MUSCLE_RULES
+  'Schrägbank': 'Chest', 'Chest fly': 'Chest', 'Chest press-down machine': 'Chest', 'Dip machine (seated)': 'Chest', // seated dip machine, pressed down in front = chest (his call, 2026-11-02)
+  'Shoulder press': 'Shoulders', 'Lateral raise machine': 'Shoulders',
+  'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back',
+  'Preacher curls': 'Biceps',
+  'Squat / leg press': 'Legs', 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
+  'Decline weighted situps': 'Core', 'Back extensions': 'Core',
+};
+const MUSCLE_RULES = [ // order matters: "leg curl" is legs, "back extension" is core
+  ['Legs', /leg|squat|calf|wade|adduct|abduct|lunge|ausfallschritt|deadlift|kreuzheben|glute|hip thrust|kniebeug|beinpress|beinstreck|beinbeug|step.?up/],
+  ['Core', /sit.?up|crunch|plank|knee raise|leg raise|back ext|hyperext|r(u|ue)ckenstreck|bauch|\babs?\b|core|russian twist|woodchop/],
+  ['Triceps', /tri[cz]eps|press.?down|push.?down|skull|dips?\b|french press|kickback/],
+  ['Biceps', /bi[cz]eps|curl|hammer/],
+  ['Back', /row|rudern|pull.?down|pull.?up|klimmz|chin.?up|\blat\b|latzug|back|r(u|ue)cken|shrug|face pull/],
+  ['Shoulders', /shoulder|schulter|lateral|seitheb|overhead|military|arnold|delt|reverse fly|front raise/],
+  ['Chest', /chest|brust|bench|bankdr|schr(a|ae)gbank|fly|flies|butterfly|push.?up|liegest|pec/],
+];
+function muscleOf(name) {
+  if (MUSCLE_OF[name]) return MUSCLE_OF[name];
+  const t = name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return (MUSCLE_RULES.find(([, re]) => re.test(t)) || ['Other'])[0];
+}
+// sets per muscle group between two day keys (inclusive)
+function groupSets(sessions, from, to) {
+  const out = Object.fromEntries(MUSCLES.map((m) => [m, 0]));
+  for (const s of sessions) if (s.date >= from && s.date <= to) for (const e of s.exercises) out[muscleOf(e.name)] += e.sets.length;
+  return out;
+}
+
+// ---------- body pictures (polygons in body.js): tiny icon per muscle group + the big front/back heatmap ----------
+const REGION = { chest: 'Chest', 'front-deltoids': 'Shoulders', 'back-deltoids': 'Shoulders', triceps: 'Triceps', trapezius: 'Back', 'upper-back': 'Back',
+  biceps: 'Biceps', abs: 'Core', obliques: 'Core', 'lower-back': 'Core', quadriceps: 'Legs', hamstring: 'Legs', calves: 'Legs', soleus: 'Legs',
+  adductor: 'Legs', abductors: 'Legs', gluteal: 'Legs' };
+const SIDE_OF = { Back: 'back', Triceps: 'back' }; // which view shows the group best in a tiny icon
+const bodySvg = (side, cls, clsOf, label) => `<svg class="${cls}" viewBox="0 0 100 220" ${label ? `role="img" aria-label="${label}"` : 'aria-hidden="true"'}>${BODY[side].map(([m, p]) => `<polygon points="${p}" class="${clsOf(REGION[m]) || ''}"/>`).join('')}</svg>`;
+const muscleIcon = (g) => bodySvg(SIDE_OF[g] || 'front', 'micon', (r) => (r && r === g ? 'on' : ''));
+const heatLvl = (n) => (!n ? '' : n < 4 ? 'h1' : n < 7 ? 'h2' : n < 10 ? 'h3' : 'h4');
+function muscleMap(counts) {
+  const groups = MUSCLES.filter((m) => m !== 'Other' || counts.Other);
+  return `<div class="body-map">${bodySvg('front', 'heat', (r) => r && heatLvl(counts[r]), 'Front')}${bodySvg('back', 'heat', (r) => r && heatLvl(counts[r]), 'Back')}</div>
+    <div class="heat-key"><span>0</span><i class="k0"></i><i class="k1"></i><i class="k2"></i><i class="k3"></i><i class="k4"></i><span>10+ sets</span></div>
+    <ul class="mlist">${groups.map((m) => `<li>${muscleIcon(m)}<span>${m}</span><b class="${counts[m] ? '' : 'bad'}">${counts[m]}</b></li>`).join('')}</ul>`;
+}
+
+// ---------- sets like Strong/Hevy: Set | (Previous) | kg | Reps, best set highlighted ----------
+const isAssist = (name) => /assist/i.test(name);
+function bestIdx(sets, assist) { // heaviest (assist: least help), then most reps
+  let b = -1;
+  sets.forEach((s, i) => { const B = sets[b]; if (!B || (s.kg !== B.kg ? (assist ? s.kg < B.kg : s.kg > B.kg) : s.reps > B.reps)) b = i; });
+  return b;
+}
+const prevTxt = (s) => (!s ? '—' : s.kg ? `${kg(s.kg)} × ${s.reps}` : `${s.reps} reps`);
+function setTable(sets, name) {
+  const b = sets.length > 1 ? bestIdx(sets, isAssist(name)) : -1;
+  return `<table class="st"><thead><tr><th>Set</th><th>${isAssist(name) ? 'Assist kg' : 'kg'}</th><th>Reps</th></tr></thead><tbody>${sets.map((s, i) =>
+    `<tr class="${i === b ? 'best' : ''}"><td>${i + 1}</td><td>${s.kg ? kg(s.kg) : '—'}</td><td>${s.reps}</td></tr>`).join('')}</tbody></table>`;
+}
+// short form for tight spots: "35 kg × 8, 8, 5" · mixed "30 kg × 6 · 25 kg × 8, 5" · bodyweight "7, 5 reps"
+function shortSets(sets) {
+  if (sets.every((x) => !x.kg)) return sets.map((x) => x.reps).join(', ') + ' reps';
+  const g = [];
+  for (const x of sets) { const l = g[g.length - 1]; if (l && l.kg === x.kg) l.reps.push(x.reps); else g.push({ kg: x.kg, reps: [x.reps] }); }
+  return g.map((q) => `${q.kg ? kg(q.kg) + ' kg' : 'BW'} × ${q.reps.join(', ')}`).join(' · ');
+}
+function exBlock(e) {
+  const notes = [...new Set(e.sets.map((x) => x.note).filter(Boolean))];
+  return `<div class="exb"><div class="exb-h">${muscleIcon(muscleOf(e.name))}<b>${esc(e.name)}</b></div>${setTable(e.sets, e.name)}${notes.length ? `<p class="sub">${notes.map(esc).join(' · ')}</p>` : ''}</div>`;
+}
+const mmss = (m) => { const s = Math.round(m * 60), h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`; };
+function runTable(rows, withDate = true) {
+  return `<table class="st rt"><thead><tr>${withDate ? '<th>Date</th>' : ''}<th>km</th><th>Time</th><th>Pace</th></tr></thead><tbody>${rows.map((r) => {
+    const km = Number(r.km) || 0, m = Number(r.minutes) || 0;
+    return `<tr>${withDate ? `<td>${dm(r.date)}</td>` : ''}<td>${kg(km)}</td><td>${m ? mmss(m) : '—'}</td><td>${km && m ? mmss(m / km) + ' /km' : '—'}</td></tr>`; }).join('')}</tbody></table>`;
+}
+// one day's training: workout (every exercise with its set table) and/or run(s)
+function trainDay(x, k, sessions) {
+  const s = sessions.find((q) => q.date === k), runs = (x.runs || []).filter((r) => r.date === k), d = x.days[k] || {};
+  let h = `<h3 class="dh">${short(k)}</h3>`;
+  if (s) h += `<p class="sub">Gym${s.start ? ' at ' + esc(s.start) : ''} · ${s.mins != null ? s.mins + ' min' : 'time not tracked'} · ${s.exercises.length} exercise${s.exercises.length === 1 ? '' : 's'} · ${s.sets} sets</p>${s.exercises.map(exBlock).join('')}`;
+  else if (d.gym) h += '<p class="sub">Gym, from the day log (no sets logged in the app).</p>';
+  if (runs.length) h += `<p class="sub">Run${runs.length > 1 ? 's' : ''}${runs.some((r) => r.with) ? ' with ' + esc(runs.find((r) => r.with).with) : ''}</p>${runTable(runs, false)}`;
+  else if (d.run) h += '<p class="sub">Run, from the day log (not logged in the app).</p>';
+  if (!s && !d.gym && !runs.length && !d.run) h += `<p class="sub">${k > x.today ? 'Still ahead.' : 'Rest day.'}</p>`;
+  return h;
+}
+const isTrain = (x, k) => !!(x.days[k]?.gym || x.days[k]?.run);
+const lastTrain = (x) => Object.keys(x.days).filter((k) => k <= x.today && isTrain(x, k)).sort().pop();
+
+// ---------- progress: best set per session (heaviest; assist: least help; bodyweight-only: most reps) ----------
+function progressOf(name, sessions) {
+  return sessions.filter((s) => s.exercises.some((e) => e.name === name)).reverse().map((s) => {
+    const sets = s.exercises.find((e) => e.name === name).sets, bw = sets.every((x) => !x.kg);
+    if (bw) { const r = Math.max(...sets.map((x) => x.reps)); return { date: s.date, v: r, reps: r, bw }; }
+    const kgs = sets.map((x) => x.kg).filter(Boolean), top = isAssist(name) ? Math.min(...kgs) : Math.max(...kgs);
+    return { date: s.date, v: top, reps: Math.max(...sets.filter((x) => x.kg === top).map((x) => x.reps)), bw };
+  });
+}
+function lineChart(pts, unit) {
+  if (!pts.length) return '<p class="sub">No sets logged for this one yet.</p>';
+  const W = 320, Hh = 130, L = 34, R = 12, T = 14, B = 22, vs = pts.map((p) => p.v);
+  // round axis ends so the labels stay whole numbers
+  let lo = Math.min(...vs), hi = Math.max(...vs); if (hi === lo) { lo -= 5; hi += 5; }
+  const pad = (hi - lo) * 0.15; lo = Math.max(0, Math.floor(lo - pad)); hi = Math.ceil(hi + pad); if ((hi - lo) % 2) hi++;
+  const x = (i) => (pts.length === 1 ? (L + W - R) / 2 : L + (i * (W - L - R)) / (pts.length - 1)), y = (v) => T + (1 - (v - lo) / (hi - lo)) * (Hh - T - B);
+  const glass = theme() === 'glass', stroke = glass ? 'url(#g-line)' : 'var(--accent)';
+  let s = `<svg class="lchart" viewBox="0 0 ${W} ${Hh}" role="img" aria-label="progress">${glass ? '<defs><linearGradient id="g-line" x1="0" x2="1"><stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>' : ''}`;
+  for (const v of [lo, (lo + hi) / 2, hi]) s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 5}" y="${y(v) + 3.5}" text-anchor="end">${kg(v)}</text>`;
+  if (pts.length > 1) s += `<polyline fill="none" stroke="${stroke}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="${pts.map((p, i) => `${x(i)},${y(p.v)}`).join(' ')}"/>`;
+  pts.forEach((p, i) => (s += `<circle cx="${x(i)}" cy="${y(p.v)}" r="4" fill="var(--bg)" stroke="var(--accent)" stroke-width="2"/>`));
+  s += `<text x="${x(0)}" y="${Hh - 6}" text-anchor="${pts.length === 1 ? 'middle' : 'start'}">${dm(pts[0].date)}</text>`;
+  if (pts.length > 1) s += `<text x="${x(pts.length - 1)}" y="${Hh - 6}" text-anchor="end">${dm(pts[pts.length - 1].date)}</text>`;
+  return s + `<text x="4" y="10">${unit}</text></svg>`;
+}
+function spark(pts) {
+  const W = 56, Hh = 22, vs = pts.map((p) => p.v), lo = Math.min(...vs), hi = Math.max(...vs);
+  const x = (i) => (pts.length === 1 ? W / 2 : 3 + (i * (W - 6)) / (pts.length - 1)), y = (v) => (hi === lo ? Hh / 2 : 3 + (1 - (v - lo) / (hi - lo)) * (Hh - 6));
+  return `<svg class="spark" viewBox="0 0 ${W} ${Hh}" aria-hidden="true">${pts.length > 1 ? `<polyline points="${pts.map((p, i) => `${x(i)},${y(p.v)}`).join(' ')}"/>` : ''}<circle cx="${x(pts.length - 1)}" cy="${y(vs[vs.length - 1])}" r="2.5"/></svg>`;
+}
+const bestTxt = (p) => (p.bw ? `${p.v} reps` : `${kg(p.v)} kg × ${p.reps}`);
+function bestOf(pts, assist) { return pts.reduce((b, p) => (!b || (p.v !== b.v ? (p.bw ? p.v > b.v : assist ? p.v < b.v : p.v > b.v) : p.reps > b.reps) ? p : b), null); }
+function progressDetail(name, all) {
+  const pts = progressOf(name, all), bw = pts.length && pts[0].bw, first = pts[0], lastP = pts[pts.length - 1];
+  const delta = pts.length > 1 ? lastP.v - first.v : 0, better = isAssist(name) ? delta < 0 : delta > 0;
+  return `<p class="sub">${bw ? 'most reps' : isAssist(name) ? 'least assist (lower = better)' : 'top set'} per session</p>${lineChart(pts, bw ? 'reps' : 'kg')}`
+    + (pts.length ? `<p class="sub">${pts.length} session${pts.length === 1 ? '' : 's'} · last ${dm(lastP.date)}: ${bestTxt(lastP)}${pts.length > 1 ? ` · <span class="${delta === 0 ? '' : better ? 'good' : 'warn'}">${delta === 0 ? '±0' : sign(delta, delta % 1 ? 1 : 0)} ${bw ? 'reps' : 'kg'} since ${dm(first.date)}</span>` : ''}</p>` : '');
+}
+const progOpen = new Set(); // expanded progress rows (kept while the app is open)
+function progressRows(all) {
+  const names = gymRecent();
+  if (!names.length) return '<p class="sub">Log a workout first.</p>';
+  return MUSCLES.map((m) => [m, names.filter((n) => muscleOf(n) === m)]).filter(([, l]) => l.length).map(([m, l]) => `<h4 class="pg-h">${m}</h4>${l.map((n) => {
+    const pts = progressOf(n, all), b = bestOf(pts, isAssist(n)), open = progOpen.has(n);
+    return `<div class="pr${open ? ' open' : ''}"><button class="pr-b" data-pr="${esc(n)}" aria-expanded="${open}">${muscleIcon(m)}<span class="pr-n">${esc(n)}<small>${pts.length} session${pts.length === 1 ? '' : 's'}</small></span>${spark(pts)}<span class="pr-v">${b ? bestTxt(b) : '—'}</span></button><div class="pr-c">${open ? progressDetail(n, all) : ''}</div></div>`; }).join('')}`).join('');
+}
+
+// ---------- Training detail sheet: sections he can long-press to reorder (saved as trainOrder) ----------
+let trainMonth = null, trainSel = null;
+const TSECS = [['cal', 'Calendar'], ['muscles', 'Muscle groups · last 7 days'], ['weeks', 'Minutes per week'], ['progress', 'Progress'], ['runs', 'Runs']];
+const trainOrder = () => { const s = LS.get('trainOrder', []).filter((id) => TSECS.some(([k]) => k === id)); return [...s, ...TSECS.map(([k]) => k).filter((k) => !s.includes(k))]; };
+function trainCal(box, x, sessions, dayBox) {
+  const firstK = Object.keys(x.days).filter((k) => isTrain(x, k)).sort()[0] || x.today;
+  const month = (trainMonth ||= x.today.slice(0, 7)), m1 = month + '-01', dim = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate(), mEnd = month + '-' + String(dim).padStart(2, '0');
+  let rows = '';
+  for (let w = monOf(m1); w <= mEnd; w = addDays(w, 7)) rows += '<div class="cal-row">' + span(w, addDays(w, 6)).map((k) => {
+    if (k.slice(0, 7) !== month) return '<span class="cal-day out"></span>';
+    const d = x.days[k] || {}, cls = d.gym && d.run ? 'both' : d.gym ? 'gym' : d.run ? 'run' : k > x.today ? 'future' : 'rest';
+    return `<button class="cal-day t-${cls}${k === x.today ? ' now' : ''}${k === trainSel ? ' sel' : ''}" data-k="${k}" aria-label="${short(k)}${d.gym ? ', gym' : ''}${d.run ? ', run' : ''}">${Number(k.slice(8))}</button>`; }).join('') + '</div>';
+  const title = new Date(m1 + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const n = span(m1, mEnd).filter((k) => isTrain(x, k)).length;
+  box.innerHTML = `<div class="cal">
+    <div class="cal-head"><button class="cal-nav" data-nav="-1" aria-label="Previous month" ${month <= firstK.slice(0, 7) ? 'disabled' : ''}>‹</button><b>${title}</b>
+      <button class="cal-nav" data-nav="1" aria-label="Next month" ${month >= x.today.slice(0, 7) ? 'disabled' : ''}>›</button></div>
+    <div class="cal-row dow">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => `<span>${d}</span>`).join('')}</div>${rows}
+    <div class="cal-key"><span><i class="t-gym"></i>Gym</span><span><i class="t-run"></i>Run</span><span><i class="t-both"></i>Both</span><span class="sub">${n} day${n === 1 ? '' : 's'} this month</span></div></div>`;
+  box.querySelectorAll('.cal-day[data-k]').forEach((b) => b.addEventListener('click', () => {
+    trainSel = b.dataset.k; box.querySelectorAll('.cal-day.sel').forEach((o) => o.classList.remove('sel')); b.classList.add('sel');
+    dayBox.innerHTML = trainDay(x, trainSel, sessions);
+  }));
+  box.querySelectorAll('.cal-nav').forEach((b) => b.addEventListener('click', () => {
+    const d = new Date(month + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + Number(b.dataset.nav));
+    trainMonth = d.toISOString().slice(0, 7); trainCal(box, x, sessions, dayBox);
+  }));
+}
+function trainingDetail(x) {
+  const all = gymSessions(x.gym), wb = weekBars(gymWeeks(all, x.today, 8), all), counts = groupSets(all, addDays(x.today, -6), x.today);
+  const zero = MUSCLES.filter((m) => m !== 'Other' && !counts[m]);
+  const runs = [...(x.runs || [])].sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  trainSel ||= lastTrain(x) || x.today;
+  const body = {
+    cal: '<div class="tcal"></div><div class="tday"></div>',
+    muscles: `<p class="sub">Darker = more sets${zero.length ? ` · <span class="bad">0 sets: ${zero.join(', ')}</span>` : ''}</p>${muscleMap(counts)}`,
+    weeks: `<p class="sub">last 8 weeks${wb.timed && all.some((s) => s.mins == null) ? ` · hollow = not timed, counted as ~${wb.med} min` : wb.timed ? '' : ' · sets per week until workouts are timed'}</p>${wb.chart}<div class="detail gw-detail"></div>`,
+    progress: `<p class="sub">Top set over time · tap a row for the chart</p>${progressRows(all)}`,
+    runs: runs.length ? runTable(runs) : '<p class="sub">No runs logged in the app yet.</p>',
+  };
+  const title = (k) => (k === 'weeks' && !wb.timed ? 'Sets per week' : TSECS.find(([q]) => q === k)[1]);
+  return { html: `<div class="tsecs">${trainOrder().map((k) => `<section class="tsec" data-id="${k}">${h3(title(k))}${body[k]}</section>`).join('')}</div>`,
+    wire(root) {
+      trainCal(root.querySelector('.tcal'), x, all, root.querySelector('.tday'));
+      root.querySelector('.tday').innerHTML = trainDay(x, trainSel, all);
+      const det = root.querySelector('.gw-detail'), svg = root.querySelector('[data-id=weeks] svg.chart');
+      det.textContent = wb.tap(99);
+      svg?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = wb.tap(Number(i)); });
+      root.querySelectorAll('[data-pr]').forEach((b) => b.addEventListener('click', () => {
+        const n = b.dataset.pr, row = b.parentElement, open = !progOpen.has(n);
+        open ? progOpen.add(n) : progOpen.delete(n);
+        row.classList.toggle('open', open); b.setAttribute('aria-expanded', open);
+        row.querySelector('.pr-c').innerHTML = open ? progressDetail(n, all) : '';
+      }));
+      dragSort(root.querySelector('.tsecs'), '.tsec', (ids) => LS.set('trainOrder', ids));
+    } };
+}
+
+// ---------- long-press drag to reorder (like moving apps on a home screen) ----------
+// hold ~450 ms without moving (> 8 px cancels → normal scroll/tap) → item lifts and follows the finger, others make room; drop saves.
+let DRAGGING = false;
+document.addEventListener('touchmove', (e) => { if (DRAGGING) e.preventDefault(); }, { passive: false });
+function dragSort(root, sel, onDrop) {
+  if (!root || root.dataset.drag) return;
+  root.dataset.drag = '1';
+  root.addEventListener('contextmenu', (e) => { if (e.target.closest(sel)) e.preventDefault(); });
+  root.addEventListener('pointerdown', (ev) => {
+    if (DRAGGING || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+    const item = ev.target.closest(sel);
+    if (!item || item.parentElement.closest(sel) || ev.target.closest('input, select, textarea')) return;
+    const sx = ev.clientX, sy = ev.clientY, pid = ev.pointerId;
+    let px = sx, py = sy, ph = null, dx = 0, dy = 0, css = '', raf = 0;
+    const scroller = root.closest('.sheet') || document.scrollingElement;
+    const timer = setTimeout(start, 450);
+    const off = () => { clearTimeout(timer); removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); };
+    function move(e) {
+      if (e.pointerId !== pid) return;
+      px = e.clientX; py = e.clientY;
+      if (!ph) { if (Math.hypot(px - sx, py - sy) > 8) off(); return; }
+      e.preventDefault(); follow();
+    }
+    function up(e) { if (e.pointerId !== pid) return; off(); if (ph) finish(); }
+    function start() {
+      const r = item.getBoundingClientRect();
+      ph = document.createElement(item.tagName); ph.className = item.className + ' drag-ph'; ph.style.height = r.height + 'px';
+      item.before(ph);
+      dx = sx - r.left; dy = sy - r.top; css = item.style.cssText;
+      Object.assign(item.style, { position: 'fixed', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px', margin: '0', zIndex: '30', pointerEvents: 'none' });
+      item.classList.add('lifted'); DRAGGING = true;
+      navigator.vibrate?.(10);
+      const edge = () => { const h = innerHeight; if (py < 70) scroller.scrollTop -= 9; else if (py > h - 70) scroller.scrollTop += 9; follow(); raf = requestAnimationFrame(edge); };
+      raf = requestAnimationFrame(edge);
+    }
+    function follow() {
+      item.style.left = px - dx + 'px'; item.style.top = py - dy + 'px';
+      const t = document.elementFromPoint(px, py)?.closest(sel);
+      if (!t || t === item || t === ph || !root.contains(t)) return;
+      const tr = t.getBoundingClientRect(), side = t.parentElement.classList.contains('tiles') ? px > tr.left + tr.width / 2 : py > tr.top + tr.height / 2;
+      const ref = side ? t.nextElementSibling : t;
+      if (ref !== ph && !(ph.parentNode === t.parentNode && ph.nextElementSibling === ref)) t.parentNode.insertBefore(ph, ref);
+    }
+    function finish() {
+      cancelAnimationFrame(raf);
+      item.style.cssText = css; item.classList.remove('lifted');
+      ph.replaceWith(item); DRAGGING = false;
+      // the release must not count as a tap (no detail sheet, no day selected)
+      const kill = (e) => { e.stopPropagation(); e.preventDefault(); };
+      addEventListener('click', kill, { capture: true, once: true }); setTimeout(() => removeEventListener('click', kill, { capture: true }), 400);
+      onDrop([...root.querySelectorAll(sel)].map((el) => el.dataset.id));
+    }
+    addEventListener('pointermove', move, { passive: false }); addEventListener('pointerup', up); addEventListener('pointercancel', up);
+  });
+}
+
+// ---------- streak ----------
+// earned days count, frozen days keep the streak alive without adding to it, anything else breaks it; today joins once earned
+const stOf = (days, k) => days[k]?.streak || 'no';
+function streakInfo(days, today) {
+  let cur = 0;
+  for (let k = addDays(today, -1); stOf(days, k) !== 'no'; k = addDays(k, -1)) if (stOf(days, k) === 'earned') cur++;
+  if (stOf(days, today) === 'earned') cur++;
+  const first = Object.keys(days).filter((k) => days[k].logged).sort()[0] || today;
+  let best = 0, run = 0;
+  for (const k of span(first, today)) {
+    const st = stOf(days, k);
+    if (st === 'earned') best = Math.max(best, ++run);
+    else if (st === 'no' && k !== today) run = 0;
+  }
+  // golden week = Mon–Sun all earned (frozen doesn't count)
+  const mon = (k) => addDays(k, -((new Date(k + 'T12:00:00Z').getUTCDay() + 6) % 7));
+  const golden = (ks) => ks.every((k) => k <= today && stOf(days, k) === 'earned');
+  let weeks = 0;
+  for (let m = mon(first); addDays(m, 6) <= today; m = addDays(m, 7)) if (golden(span(m, addDays(m, 6)))) weeks++;
+  return { cur, best, weeks, first, mon, golden, today: stOf(days, today) === 'earned' };
+}
+window.streakInfo = streakInfo;
+let calMonth = null; // month shown in the streak calendar (YYYY-MM)
+
+// ---------- cards ----------
+const avg = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null);
+const sum = (a) => a.reduce((s, v) => s + v, 0);
+const sign = (v, d = 1) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+const CARDS = [
+  { id: 'streak', title: 'Study streak', render(x) {
+    const s = streakInfo(x.days, x.today);
+    const month = (calMonth ||= x.today.slice(0, 7));
+    const m1 = month + '-01', dim = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate();
+    const mEnd = month + '-' + String(dim).padStart(2, '0');
+    const goldMonth = mEnd <= x.today && s.golden(span(m1, mEnd));
+    const live = (k) => stOf(x.days, k) !== 'no';
+    let rows = '';
+    for (let w = s.mon(m1); w <= mEnd; w = addDays(w, 7)) {
+      const ks = span(w, addDays(w, 6));
+      rows += `<div class="cal-row${s.golden(ks) ? ' gold' : ''}">` + ks.map((k, i) => {
+        if (k.slice(0, 7) !== month) return '<span class="cal-day out"></span>';
+        const st = stOf(x.days, k);
+        const cls = k > x.today ? 'future' : k < s.first ? 'pre' : st === 'earned' ? 'on' : st === 'frozen' ? 'frz' : k === x.today ? 'open' : 'off';
+        const band = (st !== 'no' && k <= x.today) ? (i > 0 && live(ks[i - 1]) && ks[i - 1].slice(0, 7) === month ? ' jl' : '') + (i < 6 && live(ks[i + 1]) && ks[i + 1] <= x.today && ks[i + 1].slice(0, 7) === month ? ' jr' : '') : '';
+        return `<button class="cal-day ${cls}${band}${k === x.today ? ' now' : ''}" data-k="${k}">${Number(k.slice(8))}</button>`;
+      }).join('') + '</div>';
+    }
+    const title = new Date(m1 + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    const label = { earned: '🔥 earned', frozen: '🧊 frozen', no: 'not earned' };
+    return { big: `<span class="${s.cur ? 'fire' : ''}">🔥 ${s.cur}</span>`, unit: `day${s.cur === 1 ? '' : 's'}`,
+      sub: `best ${s.best} · golden weeks ${s.weeks}` + (s.today ? ' · <span class="good">today ✓</span>' : ' · today still open'),
+      html: `<div class="cal">
+        <div class="cal-head"><button class="cal-nav" data-nav="-1" aria-label="Previous month" ${month <= s.first.slice(0, 7) ? 'disabled' : ''}>‹</button>
+          <b class="${goldMonth ? 'gold-t' : ''}">${goldMonth ? '👑 ' : ''}${title}</b>
+          <button class="cal-nav" data-nav="1" aria-label="Next month" ${month >= x.today.slice(0, 7) ? 'disabled' : ''}>›</button></div>
+        <div class="cal-row dow">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => `<span>${d}</span>`).join('')}</div>${rows}</div><div class="detail"></div>`,
+      wire(el) {
+        const det = el.querySelector('.detail');
+        det.textContent = `${short(x.today)}: ${label[stOf(x.days, x.today)]}`;
+        el.querySelectorAll('.cal-day[data-k]').forEach((b) => b.addEventListener('click', () => {
+          const k = b.dataset.k;
+          det.textContent = k > x.today ? `${short(k)}: still ahead` : k < s.first ? `${short(k)}: before tracking` : `${short(k)}: ${label[stOf(x.days, k)]}`;
+        }));
+        el.querySelectorAll('.cal-nav').forEach((b) => b.addEventListener('click', () => {
+          const d = new Date(month + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() + Number(b.dataset.nav));
+          calMonth = d.toISOString().slice(0, 7);
+          // inside a detail sheet (tile / list / tap): redraw that sheet; render() only redraws the main view (bug until 2026-11-02)
+          if (el.closest('#sheet')) { const y = sheet().scrollTop; openDetail('streak'); sheet().scrollTop = y; render(); } else render();
+        }));
+      } };
+  } },
+  { id: 'score', title: 'Day score', render(x) {
+    const s = x.dates.map((k) => x.days[k]?.score ?? null);
+    const v = s.filter((n) => n != null), p = x.prev.map((k) => x.days[k]?.score).filter((n) => n != null);
+    const a = avg(v), pa = avg(p);
+    return { big: a == null ? '—' : a.toFixed(1), unit: '/10',
+      sub: `${v.length} rated day${v.length === 1 ? '' : 's'}` + (a != null && pa != null ? ` · <span class="${a >= pa ? 'good' : 'bad'}">${sign(a - pa)} vs before</span>` : ''),
+      chart: bars(s, { max: 10, hollow: (i) => !x.days[x.dates[i]]?.final }),
+      tap: (i) => { const d = x.days[x.dates[i]]; return d?.score != null ? `${short(x.dates[i])}: ${d.score}/10${d.final ? '' : ' (provisional)'} · ${d.why}` : `${short(x.dates[i])}: not rated`; } };
+  } },
+  { id: 'study', title: 'Study time', render(x) {
+    const m = x.dates.map((k) => (x.days[k]?.study ? x.days[k].study : null));
+    const tot = sum(m.filter(Boolean)) / 60, prev = sum(x.prev.map((k) => x.days[k]?.study || 0)) / 60;
+    return { big: tot.toFixed(1), unit: 'h',
+      sub: x.prev.length ? `<span class="${tot >= prev ? 'good' : 'bad'}">${sign(tot - prev)} h vs before</span> · best day ${(Math.max(0, ...m.filter(Boolean)) / 60).toFixed(1)} h` : `best day ${(Math.max(0, ...m.filter(Boolean)) / 60).toFixed(1)} h`,
+      chart: bars(m),
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${((d.study || 0) / 60).toFixed(1)} h study · ${Math.round(d.chat || 0)} min chat`; },
+      html: '<div class="study-day"></div>',
+      // tap a bar → that day's courses (time tracking) + what he did (## Study of the day log), bar highlighted
+      wire(el) {
+        const svg = el.querySelector('svg.chart'), box = el.querySelector('.study-day');
+        if (!svg || !box) return;
+        const show = (i) => {
+          const k = x.dates[i], d = x.days[k] || {};
+          el.querySelectorAll('.detail').forEach((dd) => (dd.hidden = true)); // the panel replaces the one-line summary
+          svg.classList.add('has-sel'); svg.querySelectorAll('rect.bar').forEach((b) => b.classList.toggle('sel', Number(b.dataset.b) === i));
+          const crs = Object.entries(d.courses || {}).filter(([, mm]) => mm >= 1).sort((a, b) => b[1] - a[1]);
+          box.innerHTML = `<h3 class="dh">${short(k)}</h3>`
+            + (crs.length ? `<p class="sub">${crs.map(([c, mm]) => `${esc(c)} ${(mm / 60).toFixed(1)} h`).join(' · ')}</p>` : '')
+            + (d.studyItems?.length ? `<ul class="study-items">${d.studyItems.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : `<p class="sub">${d.logged ? 'Nothing under ## Study that day.' : 'No day log for this day.'}</p>`);
+        };
+        svg.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) show(Number(i)); });
+      } };
+  } },
+  { id: 'piano', title: 'Piano', render(x) {
+    const m = x.dates.map((k) => x.days[k]?.piano || null);
+    const played = m.filter(Boolean), tot = sum(played), prev = sum(x.prev.map((k) => x.days[k]?.piano || 0));
+    const last = [...(x.piano || [])].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)).pop();
+    const live = LS.get('pianoTimer', null);
+    return { big: String(Math.round(tot)), unit: 'min',
+      sub: `${played.length}/${x.dates.length} days played` + (x.prev.length ? ` · <span class="${tot >= prev ? 'good' : 'bad'}">${tot >= prev ? '+' : '−'}${Math.round(Math.abs(tot - prev))} min vs before</span>` : '')
+        + (last ? ` · last ${short(last.date)}` : ''),
+      head: `<button class="card-btn${live ? ' live' : ''}" data-piano>${live ? '■ Stop' : '▶ Start'}</button>`,
+      chart: bars(m),
+      tap: (i) => { const k = x.dates[i], rows = (x.piano || []).filter((r) => r.date === k);
+        return rows.length ? `${short(k)}: ${Math.round(x.days[k].piano)} min` + (rows.some((r) => r.note) ? ' · ' + rows.map((r) => r.note).filter(Boolean).join(', ') : '') : `${short(k)}: didn’t play`; },
+      wire(el) { el.querySelector('[data-piano]').addEventListener('click', () => window.openPiano?.()); } };
+  } },
+  { id: 'protein', title: 'Protein', render(x) {
+    const pr = x.dates.map((k) => (x.days[k]?.meals ? Math.round(x.days[k].protein) : null));
+    const logged = x.dates.filter((k) => x.days[k]?.meals);
+    const ap = avg(logged.map((k) => x.days[k].protein));
+    const hit = logged.filter((k) => x.days[k].protein >= PROTEIN_GOAL()).length;
+    return { big: ap == null ? '—' : `<span class="${ap >= PROTEIN_GOAL() ? 'good' : 'warn'}">${Math.round(ap)}</span>`, unit: 'g avg',
+      sub: ap == null ? 'nothing logged' : `goal ${PROTEIN_GOAL()} g · ${hit}/${logged.length} days hit`,
+      chart: bars(pr, { ref: PROTEIN_GOAL(), cls: (v) => (v >= PROTEIN_GOAL() ? 'var(--good)' : 'var(--accent)') }),
+      tap: (i) => { const d = x.days[x.dates[i]]; return d?.meals ? `${short(x.dates[i])}: ${Math.round(d.protein)} g protein · ${d.meals} items` : `${short(x.dates[i])}: nothing logged`; } };
+  } },
+  { id: 'kcal', title: 'Calories', render(x) {
+    const kc = x.dates.map((k) => (x.days[k]?.meals ? Math.round(x.days[k].kcal) : null));
+    const logged = x.dates.filter((k) => x.days[k]?.meals);
+    const ak = avg(logged.map((k) => x.days[k].kcal)), goal = KCAL_GOAL();
+    // within ±10 % of the target = on target; over = warn, under = plain
+    const near = (v) => goal && Math.abs(v - goal) <= goal * 0.1;
+    const on = logged.filter((k) => near(x.days[k].kcal)).length;
+    return { big: ak == null ? '—' : `<span class="${!goal ? '' : near(ak) ? 'good' : 'warn'}">${Math.round(ak).toLocaleString('en')}</span>`, unit: 'kcal avg',
+      sub: ak == null ? 'nothing logged' : goal ? `target ${goal.toLocaleString('en')} · ${on}/${logged.length} days within ±10 %` : `${logged.length} days logged`,
+      chart: bars(kc, { ref: goal, cls: (v) => (!goal ? 'var(--accent)' : near(v) ? 'var(--good)' : v > goal ? 'var(--warn)' : 'var(--accent)') }),
+      tap: (i) => { const d = x.days[x.dates[i]]; return d?.meals ? `${short(x.dates[i])}: ${Math.round(d.kcal).toLocaleString('en')} kcal · ${d.meals} items` : `${short(x.dates[i])}: nothing logged`; } };
+  } },
+  { id: 'mouth', title: 'Mouth hygiene', render(x) {
+    // done = brushed AM + brushed PM + flossed; before mouthStart only floss was tracked
+    const start = MOUTH_START(), ds = x.dates.filter((k) => k >= start && k < x.today);
+    const n = ds.filter((k) => mouthDone(x.days[k])).length, td = x.days[x.today];
+    let streak = 0; for (let k = mouthDone(td) ? x.today : addDays(x.today, -1); k >= start && mouthDone(x.days[k]); k = addDays(k, -1)) streak++;
+    const fl = x.dates.filter((k) => k >= FLOSS_START() && k < x.today), fn = fl.filter((k) => x.days[k]?.floss).length;
+    return { big: ds.length ? `<span class="${n / ds.length >= 0.7 ? 'good' : 'bad'}">${n}</span>` : `${mouthCount(td)}`, unit: ds.length ? `/${ds.length} days` : '/3 today',
+      sub: `streak ${streak} 🪥 · today ${mouthCount(td)}/3` + (fl.length ? ` · floss ${fn}/${fl.length}` : ''),
+      chart: bars(x.dates.map((k) => (k < FLOSS_START() ? null : mouthCount(x.days[k]))), { max: 3, cls: (v) => (v === 3 ? 'var(--good)' : v ? 'var(--warn)' : 'var(--bad)') }),
+      tap: (i) => { const k = x.dates[i], d = x.days[k] || {};
+        return k < FLOSS_START() ? `${short(k)}: before tracking` : `${short(k)}: ` + [d.brushAm ? '🪥 AM ✓' : '🪥 AM ✗', d.brushPm ? '🪥 PM ✓' : '🪥 PM ✗', d.floss ? '🧵 floss ✓' : '🧵 floss ✗', d.mouthwash && 'mouthwash ✓'].filter(Boolean).join(' · ') + (k < start ? ' (only floss tracked then)' : ''); } };
+  } },
+  { id: 'shower', title: 'Showers', render(x) {
+    const start = MOUTH_START(), ds = x.dates.filter((k) => k >= start);
+    const v = x.dates.map((k) => (k < start ? null : x.days[k]?.showers || 0));
+    const days = ds.filter((k) => x.days[k]?.showers).length, tot = sum(ds.map((k) => x.days[k]?.showers || 0));
+    const last = [...x.dates].reverse().find((k) => x.days[k]?.showers);
+    return { big: String(days), unit: `/${ds.length} days`,
+      sub: `${tot} shower${tot === 1 ? '' : 's'}` + (last ? ` · last ${last === x.today ? 'today' : daysBetween(last, x.today) + ' d ago'}` : ''),
+      chart: bars(v, { max: Math.max(2, ...v.filter((n) => n != null)), cls: (n) => (n ? 'var(--accent)' : 'var(--line)') }),
+      tap: (i) => { const k = x.dates[i]; return k < start ? `${short(k)}: before tracking` : `${short(k)}: ${x.days[k]?.showers || 0} shower${x.days[k]?.showers === 1 ? '' : 's'}`; } };
+  } },
+  { id: 'training', title: 'Training', ownSheet: true, render(x) {
+    const g = x.dates.filter((k) => x.days[k]?.gym).length, r = x.dates.filter((k) => x.days[k]?.run).length;
+    const weeks = Math.max(1, x.dates.length / 7), last = lastTrain(x);
+    return { big: String(g + r), unit: 'sessions',
+      sub: `${g} gym · ${r} run` + (CFG.trainingPerWeek ? ` · goal ${Math.round(CFG.trainingPerWeek * weeks)}` : '') + (last ? ` · last session ${short(last)}` : ''),
+      // gym = accent, run = --run (same colours as the calendar in the detail sheet), both = full height
+      chart: bars(x.dates.map((k) => ((x.days[k]?.gym ? 1 : 0) + (x.days[k]?.run ? 1 : 0)) || null), { max: 2, cls: (v, i) => (x.days[x.dates[i]]?.gym ? 'var(--accent)' : 'var(--run)') }),
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${[d.gym && 'gym', d.run && 'run'].filter(Boolean).join(' + ') || 'rest'}`; },
+      html: '<div class="train-day"></div>',
+      // tap a bar → only that bar highlighted + that day's workout (set tables) / run below (same as the study time card)
+      wire(el) {
+        const svg = el.querySelector('svg.chart'), box = el.querySelector('.train-day');
+        if (!svg || !box) return;
+        const all = gymSessions(x.gym);
+        svg.addEventListener('click', (ev) => {
+          const i = ev.target.getAttribute('data-i'); if (i == null) return;
+          el.querySelectorAll('.detail').forEach((dd) => (dd.hidden = true));
+          svg.classList.add('has-sel'); svg.querySelectorAll('rect.bar').forEach((b) => b.classList.toggle('sel', b.dataset.b === i));
+          box.innerHTML = trainDay(x, x.dates[Number(i)], all);
+        });
+      } };
+  } },
+  { id: 'sleep', title: 'Asleep at', render(x) {
+    const h = x.dates.map((k) => sleepHours(x.days[k]?.asleep));
+    const v = h.filter((n) => n != null).sort((a, b) => a - b);
+    const med = v.length ? v[Math.floor((v.length - 1) / 2)] : null;
+    return { big: med == null ? '—' : fmtClock(med), unit: 'median',
+      sub: `${v.filter((n) => n >= 25).length} of ${v.length} nights after 01:00` + (CFG.sleepTarget ? ` · line = ${CFG.sleepTarget}` : '') + ' · taller = later',
+      chart: bars(h.map((n) => (n == null ? null : n - 21)), { max: 8, ref: CFG.sleepTarget ? sleepHours(CFG.sleepTarget) - 21 : undefined, cls: (n) => (n >= 4 ? 'var(--bad)' : n >= 3 ? 'var(--warn)' : 'var(--accent)') }),
+      tap: (i) => `${short(x.dates[i])}: ${x.days[x.dates[i]]?.asleep ? 'asleep ~' + x.days[x.dates[i]].asleep : 'not logged'}` };
+  } },
+  { id: 'sleeplen', title: 'Sleep', render(x) {
+    // asleep on day D (goodnight) → awake tap on day D+1
+    const h = x.dates.map((k) => { const a = sleepHours(x.days[addDays(k, -1)]?.asleep), w = x.days[k]?.awake;
+      if (a == null || !w) return null; const [hh, mm] = w.split(':').map(Number); const d = hh + mm / 60 + 24 - a; return d > 0 && d < 16 ? Math.round(d * 10) / 10 : null; });
+    const v = h.filter((n) => n != null);
+    const wakes = x.dates.map((k) => x.days[k]?.awake).filter(Boolean).sort();
+    return { big: v.length ? avg(v).toFixed(1) : '—', unit: 'h avg',
+      sub: v.length ? `${v.filter((n) => n < 7).length} of ${v.length} nights under 7 h` + (wakes.length ? ` · usually up ~${wakes[Math.floor((wakes.length - 1) / 2)]}` : '') : 'tap ☀️ Awake in the morning to get this',
+      chart: bars(h, { max: 10, cls: (n) => (n < 6 ? 'var(--bad)' : n < 7 ? 'var(--warn)' : 'var(--good)') }),
+      tap: (i) => { const k = x.dates[i]; return h[i] != null ? `${short(k)}: ${h[i]} h (asleep ~${x.days[addDays(k, -1)].asleep}, up ${x.days[k].awake})` : `${short(k)}: ${x.days[k]?.awake ? 'up ' + x.days[k].awake + ', no goodnight the night before' : 'no awake tap'}`; } };
+  } },
+  { id: 'mood', title: 'Mood + energy', render(x) {
+    const m = x.dates.map((k) => x.days[k]?.mood ?? null), e = x.dates.map((k) => x.days[k]?.energy ?? null);
+    const am = avg(m.filter((n) => n != null)), ae = avg(e.filter((n) => n != null));
+    const face = (n) => ['', '😣', '🙁', '😐', '🙂', '😄'][Math.round(n)] || '';
+    return { big: am == null ? '—' : `${am.toFixed(1)} ${face(am)}`, unit: '/5 mood',
+      sub: am == null ? 'rate it at 😴 Goodnight' : `energy ${ae == null ? '—' : ae.toFixed(1) + '/5'} · ${m.filter((n) => n != null).length} days rated`,
+      chart: bars(m, { max: 5, cls: (n) => (n >= 4 ? 'var(--good)' : n >= 3 ? 'var(--accent)' : n >= 2 ? 'var(--warn)' : 'var(--bad)') }),
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return d.mood || d.energy ? `${short(x.dates[i])}: mood ${d.mood ?? '—'}/5 ${face(d.mood || 0)} · energy ${d.energy ?? '—'}/5` : `${short(x.dates[i])}: not rated`; } };
+  } },
+  { id: 'caffeine', title: 'Caffeine', render(x) {
+    const c = x.dates.map((k) => x.days[k]?.caffeine || null);
+    const start = MOUTH_START(), ds = x.dates.filter((k) => k >= start), tot = sum(ds.map((k) => x.days[k]?.caffeine || 0));
+    // "late" = after 16:00 or before the day ends at 04:00
+    const late = (t) => t >= '16:00' || t < '04:00';
+    const lates = ds.flatMap((k) => x.days[k]?.cafTimes || []).filter(late).length;
+    return { big: ds.length ? (tot / ds.length).toFixed(1) : '—', unit: '/day',
+      sub: `${tot} total · ${lates} after 16:00`,
+      chart: bars(c, { cls: () => 'var(--warn)' }),
+      tap: (i) => { const d = x.days[x.dates[i]] || {}; return d.caffeine ? `${short(x.dates[i])}: ${d.caffeine} × at ${d.cafTimes.join(', ')}` : `${short(x.dates[i])}: none`; } };
+  } },
+  { id: 'home', title: 'Household', render(x) {
+    const last = {}; for (const r of x.habits || []) if (CHORES[r.habit] && (!last[r.habit] || r.date > last[r.habit])) last[r.habit] = r.date;
+    const inR = x.dates.reduce((n, k) => n + (x.days[k]?.chores?.length || 0), 0);
+    return { big: String(inR), unit: `chore${inR === 1 ? '' : 's'}`,
+      sub: 'tap 🏠 Home when you did one',
+      html: `<ul class="list">${Object.entries(CHORES).map(([h, label]) => { const g = last[h] ? daysBetween(last[h], x.today) : null;
+        const row = `<li><span>${label}</span><span class="${g == null || g >= 7 ? 'bad' : g >= 3 ? 'warn' : 'good'}">${g == null ? 'not logged yet' : g === 0 ? 'today' : g + ' d ago'}</span></li>`;
+        if (h !== 'trash') return row;
+        const ts = trashStats(x.habits, x.today);
+        return row + Object.entries(TRASH).filter(([k]) => ts[k]).map(([k, l]) => { const t = trashLine(ts[k]);
+          return `<li><span>&nbsp;&nbsp;${l.replace(/ \(.*\)$/, '')}</span><span class="${t.cls}">${t.txt}</span></li>`; }).join(''); }).join('')}</ul>` };
+  } },
+  { id: 'exams', title: 'Coming up', render(x) {
+    const next = x.deadlines.slice(0, 6);
+    const d0 = next[0] ? daysBetween(x.today, next[0].date) : null;
+    return { big: d0 == null ? '—' : d0 === 0 ? 'today' : String(d0), unit: d0 ? `day${d0 === 1 ? '' : 's'} to ${esc(next[0].item)}` : '',
+      html: `<ul class="list">${next.map((d) => { const n = daysBetween(x.today, d.date); return `<li><span class="${n <= 3 ? 'bad' : n <= 7 ? 'warn' : ''}">${esc(d.item)} · ${esc(d.course.split(' ').slice(0, 3).join(' ').replace(/[,:]$/, ''))}</span><span>${n === 0 ? 'today' : 'in ' + n + ' d'}</span></li>`; }).join('')}</ul>` };
+  } },
+  { id: 'money', title: 'Money this month', render(x) {
+    const month = x.today.slice(0, 7);
+    const rows = x.spends.filter((s) => s.date.startsWith(month));
+    const everyday = rows.filter((s) => !/^One-time/i.test(s.cat));
+    const spent = sum(everyday.map((s) => s.eur)), oneoff = sum(rows.filter((s) => /^One-time/i.test(s.cat)).map((s) => s.eur));
+    const dom = Number(x.today.slice(8)), dim = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5), 0)).getUTCDate();
+    const pace = (spent / dom) * dim;
+    const last = x.spends.reduce((m, s) => (s.date > m && s.date <= x.today ? s.date : m), '');
+    const gap = last ? daysBetween(last, x.today) : null;
+    const cats = {}; everyday.forEach((s) => (cats[s.cat] = (cats[s.cat] || 0) + s.eur));
+    const top = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 4);
+    return { big: `<span class="${pace <= BUDGET() ? 'good' : 'bad'}">€${Math.round(spent)}</span>`, unit: `of €${BUDGET()}`,
+      sub: `on pace for €${Math.round(pace)}` + (oneoff ? ` · one-offs ${oneoff < 0 ? '−' : ''}€${Math.abs(Math.round(oneoff))}` : '') +
+        (gap != null ? ` · <span class="${gap >= 2 ? 'warn' : ''}">last logged ${gap === 0 ? 'today' : gap + ' d ago'}</span>` : ''),
+      html: `<ul class="list">${top.map(([c, e]) => `<li><span>${esc(c)}</span><span>€${e.toFixed(2)}</span></li>`).join('')}</ul>` };
+  } },
+  { id: 'weight', title: 'Weight', render(x) {
+    const w = x.weights; const last = w[w.length - 1];
+    const inR = w.filter((r) => r.date >= x.dates[0]);
+    const byDay = Object.fromEntries(w.map((r) => [r.date, r.kg])); // last weigh-in of a day wins
+    const vals = x.dates.map((k) => byDay[k] ?? null), have = vals.filter((v) => v != null);
+    return { big: last ? last.kg.toFixed(1) : '—', unit: 'kg',
+      sub: last ? `${short(last.date)}` + (inR.length >= 2 ? ` · ${sign(inR[inR.length - 1].kg - inR[0].kg)} kg in range` : '') + ` · ${inR.length} weigh-in${inR.length === 1 ? '' : 's'}` : 'no weigh-ins yet',
+      chart: have.length ? bars(vals, { min: Math.floor(Math.min(...have)) - 1, max: Math.ceil(Math.max(...have)) + 0.5 }) : '',
+      tap: (i) => { const r = w.find((q) => q.date === x.dates[i]); return r ? `${short(r.date)}: ${r.kg} kg · ${r.note}` : `${short(x.dates[i])}: no weigh-in`; } };
+  } },
+];
+
+// ---------- update tab ----------
+// update.json: { date, generated, headline, sections: [{ title, highlight?, note?, items?: [item], groups?: [{ label, items }] }] }
+// item: { text, meta?, tone?: good|warn|bad|muted|focus } · text may use **bold**
+let tab = null, updShown = null; // updShown = archive date being viewed (null = latest)
+const updCache = {};
+const md = (s) => esc(s || '').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+const itemHtml = (it) => typeof it === 'string' ? `<li>${md(it)}</li>`
+  : `<li class="${esc(it.tone || '')}"><span>${md(it.text)}</span>${it.meta ? `<span class="meta">${md(it.meta)}</span>` : ''}</li>`;
+
+async function renderUpdate() {
+  const el = $('#update');
+  const latest = DATA.update;
+  let u = latest;
+  if (updShown && updShown !== latest?.date) {
+    u = updCache[updShown];
+    if (!u) {
+      el.innerHTML = '<p class="status">Loading…</p>';
+      try { u = updCache[updShown] = JSON.parse(await gh(`${F('updateArchive')}/${updShown}.json`)); } catch (e) { el.innerHTML = `<p class="status">Couldn’t load ${esc(updShown)}: ${esc(e.message)}</p>`; return; }
+    }
+  }
+  if (!u) { el.innerHTML = '<article class="card"><h2>Daily update</h2><p class="sub">No update yet. Run it in Claude ("let\'s do the update") and it shows up here.</p></article>'; return; }
+  const dates = [...new Set([...DATA.updateDates, latest?.date].filter(Boolean))].sort();
+  const i = dates.indexOf(u.date);
+  const stale = u === latest && u.date !== DATA.today;
+  el.innerHTML = `
+    <div class="upd-head">
+      <button class="cal-nav" id="upd-prev" aria-label="Older update" ${i > 0 ? '' : 'disabled'}>‹</button>
+      <div><b>${short(u.date)}</b>${u.generated ? `<span class="sub"> · ${new Date(u.generated).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: CFG.timezone })}</span>` : ''}</div>
+      <button class="cal-nav" id="upd-next" aria-label="Newer update" ${i >= 0 && i < dates.length - 1 ? '' : 'disabled'}>›</button>
+    </div>
+    ${stale ? `<p class="stale">No update yet today, this is ${short(u.date)}’s.</p>` : ''}
+    ${u.headline ? `<p class="headline">${md(u.headline)}</p>` : ''}
+    ${(u.sections || []).map((s) => `<article class="card upd">
+      <h2>${esc(s.title)}</h2>
+      ${s.highlight ? `<p class="focus">${md(s.highlight)}</p>` : ''}
+      ${s.note ? `<p class="sub">${md(s.note)}</p>` : ''}
+      ${s.items?.length ? `<ul class="list upd-list">${s.items.map(itemHtml).join('')}</ul>` : ''}
+      ${(s.groups || []).map((g) => `<h3>${esc(g.label)}</h3><ul class="list upd-list">${(g.items || []).map(itemHtml).join('')}</ul>`).join('')}
+    </article>`).join('')}`;
+  const go = (d) => { updShown = d === latest?.date ? null : d; renderUpdate(); };
+  $('#upd-prev').addEventListener('click', () => go(dates[i - 1]));
+  $('#upd-next').addEventListener('click', () => go(dates[i + 1]));
+  if (u === latest && latest.generated) LS.set('seenUpdate', latest.generated);
+}
+
+function showTab(t) {
+  tab = t; LS.set('tab', t);
+  document.querySelectorAll('.tabs button').forEach((b) => { const on = b.dataset.tab === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+  $('#update').hidden = t !== 'update';
+  $('#cards').hidden = $('#today').hidden = $('.range').hidden = t !== 'stats';
+  $('#graph').hidden = t !== 'graph';
+  document.body.classList.toggle('graph-on', t === 'graph');
+  render();
+}
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+// ---------- render ----------
+let DATA = null;
+let range = LS.get('range', 7);
+const $ = (s) => document.querySelector(s);
+
+function order() {
+  const saved = LS.get('order', []).flatMap((id) => (id === 'food' ? ['protein', 'kcal'] : id === 'floss' ? ['mouth'] : [id])).filter((id) => CARDS.some((c) => c.id === id));
+  CARDS.forEach((c, i) => {
+    if (saved.includes(c.id)) return;
+    const before = CARDS.slice(0, i).map((p) => p.id).filter((id) => saved.includes(id)).pop();
+    saved.splice(before ? saved.indexOf(before) + 1 : 0, 0, c.id);
+  });
+  return [...new Set(saved)];
+}
+const hidden = () => new Set(LS.get('hidden', []));
+
+// ---------- layouts: tiles (default) · full cards · section tabs · collapsed list; tap any card → detail sheet ----------
+const SECTION = { streak: 'study', score: 'study', study: 'study', exams: 'study', piano: 'habits', protein: 'body', kcal: 'body', training: 'body', weight: 'body',
+  sleep: 'body', sleeplen: 'body', mouth: 'habits', shower: 'habits', mood: 'habits', caffeine: 'habits', home: 'habits', money: 'money' };
+const SECTIONS = [['study', 'Study'], ['body', 'Body'], ['habits', 'Habits'], ['money', 'Money']];
+const LAYOUTS = [['tiles', 'Tiles'], ['full', 'Full cards'], ['sections', 'Section tabs'], ['list', 'Collapsed list']];
+const layout = () => LS.get('layout', 'tiles');
+const bigSet = () => new Set(LS.get('big', ['streak', 'study']));
+
+function ctxFor() {
+  const first = Object.keys(DATA.days).sort()[0] || DATA.today;
+  const from = range === 'all' ? first : addDays(DATA.today, -(range - 1));
+  const dates = span(from, DATA.today);
+  const prev = range === 'all' ? [] : span(addDays(from, -range), addDays(from, -1));
+  return { ...DATA, dates, prev };
+}
+const run = (def, ctx) => { try { return def.render(ctx); } catch (e) { return { big: '—', sub: 'couldn’t read this one: ' + esc(e.message) }; } };
+
+function fullCard(def, r, ctx) {
+  const el = document.createElement('article');
+  el.className = 'card'; el.dataset.id = def.id;
+  el.innerHTML = `${r.head ? `<div class="card-head"><h2>${def.title}</h2>${r.head}</div>` : `<h2>${def.title}</h2>`}<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.chart || ''}${r.html || ''}${r.tap ? '<div class="detail"></div>' : ''}`;
+  if (r.tap) {
+    const det = el.querySelector('.detail');
+    det.textContent = r.tap(ctx.dates.length - 1);
+    el.querySelector('svg')?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = r.tap(Number(i)); });
+  }
+  r.wire?.(el);
+  // tapping the card itself (not its chart, calendar or buttons) opens the details
+  el.addEventListener('click', (ev) => { if (!ev.target.closest('button, svg, input, a, select')) openDetail(def.id); });
+  return el;
+}
+
+function render() {
+  if (!DATA) return;
+  if (tab === 'update') { renderUpdate(); return; }
+  if (tab === 'graph') { window.renderGraph?.(); return; }
+  window.renderToday?.();
+  const ctx = ctxFor(), off = hidden(), mode = layout(), big = bigSet();
+  const root = $('#cards'); root.textContent = ''; root.className = 'cards layout-' + mode;
+  let ids = order().filter((id) => !off.has(id));
+  if (mode === 'sections') {
+    const sec = LS.get('section', 'study');
+    const seg = document.createElement('div'); seg.className = 'seg';
+    seg.innerHTML = SECTIONS.map(([k, l]) => `<button data-sec="${k}" class="${k === sec ? 'on' : ''}">${l}</button>`).join('');
+    seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { LS.set('section', b.dataset.sec); render(); }));
+    root.appendChild(seg);
+    ids = ids.filter((id) => (SECTION[id] || 'habits') === sec);
+  }
+  let grid = null;
+  for (const id of ids) {
+    const def = CARDS.find((c) => c.id === id), r = run(def, ctx);
+    if (mode === 'full' || mode === 'sections' || (mode === 'tiles' && big.has(id))) { grid = null; root.appendChild(fullCard(def, r, ctx)); continue; }
+    const el = document.createElement('article');
+    el.dataset.id = id;
+    if (mode === 'tiles') {
+      if (!grid) { grid = document.createElement('div'); grid.className = 'tiles'; root.appendChild(grid); }
+      el.className = 'tile';
+      el.innerHTML = `<h2>${def.title}</h2><div class="big">${r.big}<small>${r.unit || ''}</small></div>${r.chart || ''}`;
+      grid.appendChild(el);
+    } else {
+      el.className = 'row-card';
+      el.innerHTML = `<span class="rc-t">${def.title}</span><span class="rc-v">${r.big}<small>${r.unit || ''}</small></span><span class="chev">›</span>`;
+      root.appendChild(el);
+    }
+    el.addEventListener('click', () => openDetail(id));
+  }
+  // long-press a card → drag it somewhere else; saves the same `order` the ⚙ arrows use (hidden cards + other sections keep their slots)
+  dragSort(root, '[data-id]', (ids) => { const vis = new Set(ids); let j = 0; LS.set('order', order().map((id) => (vis.has(id) ? ids[j++] : id))); render(); });
+}
+
+// ---------- detail sheets ----------
+const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const listHtml = (rows) => `<ul class="list dl">${rows.map(([a, b, cls]) => `<li><span>${a}</span><span class="${cls || ''}">${b}</span></li>`).join('')}</ul>`;
+const h3 = (t) => `<h3 class="dh">${t}</h3>`;
+const inRange = (x, rows) => rows.filter((r) => r.date >= x.dates[0] && r.date <= x.today);
+function topBy(rows, key, n = 8) {
+  const g = {}; for (const r of rows) { const k = (r.item || '').trim(); if (k) g[k] = (g[k] || 0) + (Number(r[key]) || 0); }
+  return Object.entries(g).sort((a, b) => b[1] - a[1]).slice(0, n);
+}
+function foodDetail(x, key, unit) {
+  const today = x.foodRows.filter((r) => r.date === x.today).sort((a, b) => (Number(b[key]) || 0) - (Number(a[key]) || 0));
+  const tot = sum(today.map((r) => Number(r[key]) || 0)), rows = inRange(x, x.foodRows), all = sum(rows.map((r) => Number(r[key]) || 0));
+  let s = h3(`Today · ${Math.round(tot).toLocaleString('en')} ${unit}`) + (today.length ? listHtml(today.map((r) => [`${esc(r.item)}${r.time ? ` <small>${esc(r.time)}</small>` : ''}`, `${Math.round(Number(r[key]) || 0).toLocaleString('en')} ${unit} · ${pct(Number(r[key]) || 0, tot)} %`])) : '<p class="sub">Nothing logged today yet.</p>');
+  s += h3('Biggest sources in this range') + listHtml(topBy(rows, key).map(([k, v]) => [esc(k), `${Math.round(v).toLocaleString('en')} ${unit} · ${pct(v, all)} %`]));
+  if (key === 'kcal') {
+    const out = sum(rows.filter((r) => /eating out|buffet/i.test(r.source)).map((r) => Number(r.kcal) || 0));
+    s += `<p class="sub">Eating out: ${pct(out, all)} % of all kcal in this range.</p>`;
+  }
+  const pending = (x.notes || []).filter((n) => n.kind === 'food' && !n.done);
+  if (pending.length) s += `<p class="sub">⏳ ${pending.length} food note${pending.length === 1 ? '' : 's'} waiting for boss (not counted yet).</p>`;
+  return s;
+}
+const sleepLen = (x, k) => { const a = sleepHours(x.days[addDays(k, -1)]?.asleep), w = x.days[k]?.awake;
+  if (a == null || !w) return null; const [hh, mm] = w.split(':').map(Number); const d = hh + mm / 60 + 24 - a; return d > 0 && d < 16 ? Math.round(d * 10) / 10 : null; };
+const back = (x) => [...x.dates].reverse();
+const DETAILS = {
+  protein: (x) => foodDetail(x, 'protein_g', 'g') + h3(`Days ≥ ${PROTEIN_GOAL()} g`) + listHtml(back(x).filter((k) => x.days[k]?.meals).map((k) => [short(k), `${Math.round(x.days[k].protein)} g`, x.days[k].protein >= PROTEIN_GOAL() ? 'good' : 'warn'])),
+  kcal: (x) => foodDetail(x, 'kcal', 'kcal'),
+  piano: (x) => {
+    const rows = inRange(x, x.piano || []).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+    if (!rows.length) return '<p class="sub">No piano in this range yet. ▶ Start next time you sit down.</p>';
+    const longest = rows.reduce((m, r) => (Number(r.minutes) > Number(m.minutes) ? r : m)), times = rows.map((r) => r.time).filter(Boolean).sort();
+    const pieces = {}; rows.forEach((r) => r.note && (pieces[r.note] = (pieces[r.note] || 0) + Number(r.minutes)));
+    return listHtml([['Longest session', `${longest.minutes} min · ${short(longest.date)}`], ['Usually starts', times.length ? '~' + times[Math.floor((times.length - 1) / 2)] : '—'], ['Sessions', String(rows.length)]])
+      + (Object.keys(pieces).length ? h3('Most played') + listHtml(Object.entries(pieces).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k, v]) => [esc(k), `${v} min`])) : '')
+      + h3('Sessions') + listHtml(rows.slice(0, 40).map((r) => [`${short(r.date)} ${esc(r.time)}${r.note ? ' · ' + esc(r.note) : ''}`, `${r.minutes} min`]));
+  },
+  study: (x) => {
+    const per = {}; x.dates.forEach((k) => Object.entries(x.days[k]?.courses || {}).forEach(([c, m]) => (per[c] = (per[c] || 0) + m)));
+    const tot = sum(Object.values(per));
+    return h3('By course') + listHtml(Object.entries(per).sort((a, b) => b[1] - a[1]).map(([c, m]) => [esc(c), `${(m / 60).toFixed(1)} h · ${pct(m, tot)} %`]))
+      + h3('By day') + listHtml(back(x).filter((k) => x.days[k]?.study).map((k) => [short(k), `${(x.days[k].study / 60).toFixed(1)} h · ` + Object.entries(x.days[k].courses || {}).sort((a, b) => b[1] - a[1]).map(([c, m]) => `${esc(c.split(' ')[0])} ${(m / 60).toFixed(1)}`).join(', ')]));
+  },
+  sleeplen: (x) => {
+    const n = back(x).map((k) => [k, sleepLen(x, k)]).filter(([, h]) => h != null);
+    const wkend = (k) => [0, 6].includes(new Date(k + 'T12:00:00Z').getUTCDay());
+    const a = (f) => { const v = n.filter(([k]) => f(wkend(k))).map(([, h]) => h); return v.length ? avg(v).toFixed(1) + ' h' : '—'; };
+    return listHtml([['Weeknights', a((w) => !w)], ['Weekends (up on Sat/Sun)', a((w) => w)]])
+      + h3('Nights') + listHtml(n.map(([k, h]) => [`${short(k)} · asleep ~${x.days[addDays(k, -1)].asleep} → up ${x.days[k].awake}`, `${h} h`, h < 6 ? 'bad' : h < 7 ? 'warn' : 'good']));
+  },
+  mouth: (x) => `<table class="grid-t"><tr><th></th><th>AM</th><th>PM</th><th>Floss</th><th>Wash</th></tr>${back(x).filter((k) => k >= FLOSS_START()).map((k) => { const d = x.days[k] || {};
+    return `<tr><td>${short(k)}</td>${[d.brushAm, d.brushPm, d.floss, d.mouthwash].map((v) => `<td class="${v ? 'good' : 'bad'}">${v ? '✓' : '·'}</td>`).join('')}</tr>`; }).join('')}</table>`,
+  caffeine: (x) => listHtml(back(x).filter((k) => x.days[k]?.caffeine).map((k) => { const t = [...x.days[k].cafTimes].sort((a, b) => (a < '04:00' ? '24' + a : a).localeCompare(b < '04:00' ? '24' + b : b));
+    return [`${short(k)} · ${t.join(', ')}`, `${t.length} · latest ${t[t.length - 1]}`, t.some((v) => v >= '16:00' || v < '04:00') ? 'warn' : '']; })) || '<p class="sub">None logged.</p>',
+  home: (x) => Object.entries(CHORES).map(([h, l]) => { const ds = (x.habits || []).filter((r) => r.habit === h).map((r) => r.date).sort().reverse().slice(0, 10);
+    const base = h3(l) + (ds.length ? `<p class="sub">${ds.map(short).join(' · ')}</p>` : '<p class="sub">never logged</p>');
+    if (h !== 'trash') return base;
+    const ts = trashStats(x.habits, x.today);
+    return base + listHtml(Object.entries(TRASH).map(([k, tl]) => { const t = trashLine(ts[k]);
+      const hist = (x.habits || []).filter((r) => r.habit === 'trash' && r.value === k).map((r) => r.date).sort().reverse().slice(0, 6);
+      return [`${tl}${hist.length ? ' <small>' + hist.map(short).join(' · ') + '</small>' : ''}`, t.txt, t.cls]; })); }).join(''),
+  mood: (x) => listHtml(back(x).filter((k) => x.days[k]?.mood || x.days[k]?.energy).map((k) => { const d = x.days[k], h = sleepLen(x, k);
+    return [short(k), `mood ${d.mood ?? '—'} · energy ${d.energy ?? '—'}${h != null ? ` · slept ${h} h` : ''}`]; })) || '<p class="sub">Rate it at 😴 Night.</p>',
+  money: (x) => h3('Last 10') + listHtml([...x.spends].filter((s) => s.date <= x.today).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10).map((s) => [`${short(s.date)} · ${esc(s.what)} <small>${esc(s.cat)}</small>`, `€${s.eur.toFixed(2)}`])),
+  training: (x) => trainingDetail(x),
+  weight: (x) => { const w = inRange(x, x.weights).reverse();
+    return listHtml(w.map((r) => { const wk = x.weights.filter((q) => q.date > addDays(r.date, -7) && q.date <= r.date);
+      return [`${short(r.date)}${r.note ? ' <small>' + esc(r.note) + '</small>' : ''}`, `${r.kg.toFixed(1)} kg · 7d ⌀ ${avg(wk.map((q) => q.kg)).toFixed(1)}`]; })); },
+};
+function openDetail(id) {
+  const def = CARDS.find((c) => c.id === id), ctx = ctxFor(), r = run(def, ctx);
+  let extra = '', dwire = null;
+  try { extra = DETAILS[id] ? DETAILS[id](ctx) : r.tap ? h3('Day by day') + listHtml(back(ctx).map((k) => [r.tap(ctx.dates.indexOf(k)), ''])) : ''; } catch (e) { extra = `<p class="sub">couldn’t build details: ${esc(e.message)}</p>`; }
+  if (extra && typeof extra === 'object') ({ html: extra, wire: dwire } = extra);
+  // ownSheet cards (Training) show only number + sub line on top, then their own sections
+  if (def.ownSheet) { openSheet(def.title, `<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${extra}`, (root) => dwire?.(root)); return; }
+  openSheet(def.title, `<div class="big">${r.big}<small>${r.unit || ''}</small></div><div class="sub">${r.sub || ''}</div>${r.head || ''}${r.chart || ''}${r.tap ? '<div class="detail"></div>' : ''}${r.html || ''}${extra}`, (root) => {
+    if (r.tap) {
+      const det = root.querySelector('.detail'); det.textContent = r.tap(ctx.dates.length - 1);
+      root.querySelector('svg.chart')?.addEventListener('click', (ev) => { const i = ev.target.getAttribute('data-i'); if (i != null) det.textContent = r.tap(Number(i)); });
+    }
+    r.wire?.(root);
+    dwire?.(root);
+  });
+}
+window.openDetail = openDetail;
+
+async function refresh() {
+  if (!LS.get('conn', {}).token) { $('#setup').hidden = false; return; }
+  $('#status').textContent = 'Loading…';
+  try {
+    DATA = await load(range === 'all' ? 'all' : Math.max(range, 30));
+    LS.set('last', DATA);
+    if (!tab) showTab(DATA.update?.generated && DATA.update.generated !== LS.get('seenUpdate', null) ? 'update' : 'stats');
+    $('#status').textContent = 'Updated ' + new Date(DATA.fetched).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + ' · app ' + APP_V;
+  } catch (e) {
+    $('#status').textContent = e.message === 'auth' ? 'Token rejected: open ⚙ → Change token.' : (e instanceof TypeError ? 'Offline or GitHub unreachable' : 'Couldn’t load') + ', showing the last data: ' + e.message;
+  }
+  if (!tab) showTab(['update', 'graph'].includes(LS.get('tab', 'stats')) ? LS.get('tab', 'stats') : 'stats');
+  render();
+}
+
+// ---------- UI wiring ----------
+document.querySelectorAll('.range button').forEach((b) => {
+  b.classList.toggle('on', String(range) === b.dataset.range);
+  b.addEventListener('click', () => {
+    range = b.dataset.range === 'all' ? 'all' : Number(b.dataset.range);
+    LS.set('range', range);
+    document.querySelectorAll('.range button').forEach((o) => o.classList.toggle('on', o === b));
+    if (range === 'all') refresh(); else render();
+  });
+});
+$('#refresh').addEventListener('click', refresh);
+$('#save-token').addEventListener('click', () => {
+  LS.set('conn', { token: $('#token').value.trim(), repo: $('#repo').value.trim() });
+  $('#setup').hidden = true; refresh();
+});
+$('#change-token').addEventListener('click', () => { $('#settings').hidden = true; $('#setup').hidden = false; });
+
+function drawList() {
+  const off = hidden(), big = bigSet(), ul = $('#card-list'); ul.textContent = '';
+  order().forEach((id, i, all) => {
+    const def = CARDS.find((c) => c.id === id);
+    const li = document.createElement('li');
+    li.innerHTML = `<label><input type="checkbox" id="c-${id}" ${off.has(id) ? '' : 'checked'}> ${def.title}</label><button class="sz" aria-label="Big or small tile">${big.has(id) ? 'Big' : 'Small'}</button><button aria-label="Move up" ${i ? '' : 'disabled'}>↑</button><button aria-label="Move down" ${i < all.length - 1 ? '' : 'disabled'}>↓</button>`;
+    li.querySelector('input').addEventListener('change', (e) => { const h = hidden(); e.target.checked ? h.delete(id) : h.add(id); LS.set('hidden', [...h]); });
+    const [sz, up, down] = li.querySelectorAll('button');
+    sz.addEventListener('click', () => { const b = bigSet(); b.has(id) ? b.delete(id) : b.add(id); LS.set('big', [...b]); drawList(); });
+    const move = (d) => { const o = order(); o.splice(i, 1); o.splice(i + d, 0, id); LS.set('order', o); drawList(); };
+    up.addEventListener('click', () => move(-1)); down.addEventListener('click', () => move(1));
+    ul.appendChild(li);
+  });
+}
+function drawLayouts() {
+  const el = $('#layout-pick');
+  el.innerHTML = LAYOUTS.map(([k, l]) => `<button data-l="${k}" class="${k === layout() ? 'on' : ''}">${l}</button>`).join('');
+  el.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { LS.set('layout', b.dataset.l); drawLayouts(); }));
+}
+function drawFavs() {
+  const B = window.BUTTONS || [], favs = window.favs?.() || [], ul = $('#fav-list'); ul.textContent = '';
+  const ids = [...favs, ...B.map((b) => b.id).filter((id) => !favs.includes(id))];
+  ids.forEach((id) => {
+    const b = B.find((q) => q.id === id); if (!b) return;
+    const on = favs.includes(id), i = favs.indexOf(id);
+    const li = document.createElement('li');
+    li.innerHTML = `<label><input type="checkbox" ${on ? 'checked' : ''}> ${b.icon} ${b.label}${b.smart ? ' <small>✨ smart</small>' : ''}</label>${on ? `<button aria-label="Move up" ${i ? '' : 'disabled'}>↑</button><button aria-label="Move down" ${i < favs.length - 1 ? '' : 'disabled'}>↓</button>` : ''}`;
+    li.querySelector('input').addEventListener('change', (e) => { const f = window.favs().filter((x) => x !== id); if (e.target.checked) f.push(id); LS.set('favs', f); drawFavs(); });
+    const [up, down] = li.querySelectorAll('button');
+    const move = (d) => { const f = window.favs(); f.splice(i, 1); f.splice(i + d, 0, id); LS.set('favs', f); drawFavs(); };
+    up?.addEventListener('click', () => move(-1)); down?.addEventListener('click', () => move(1));
+    ul.appendChild(li);
+  });
+}
+function drawThemes() {
+  document.querySelectorAll('#theme-pick button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.pick === theme());
+    b.onclick = () => { LS.set('theme', b.dataset.pick); applyTheme(); drawThemes(); render(); };
+  });
+}
+$('#open-settings').addEventListener('click', () => { drawLayouts(); drawFavs(); drawList(); drawThemes(); $('#settings').hidden = false; });
+$('#close-settings').addEventListener('click', () => { $('#settings').hidden = true; render(); });
+
+DATA = LS.get('last', null);
+if (DATA?.cfg) { CFG = DATA.cfg; fmtKey = new Intl.DateTimeFormat('en-CA', { timeZone: CFG.timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }); }
+{ const t0 = ['update', 'graph'].includes(LS.get('tab', 'stats')) ? LS.get('tab', 'stats') : 'stats'; showTab(t0); tab = t0 === 'graph' ? 'graph' : null; } // real choice once fresh data is in (the graph tab stays put)
+refresh();
+// ---------- app updates ----------
+// The phone keeps the PWA alive in memory, so "reopening" only resumes the old page. On every resume ask for a new sw.js;
+// when a new worker takes over, reload once (later if a sheet is open, so a half-typed log isn't lost; workouts live in localStorage anyway).
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloadPending = false;
+  const reloadNow = () => { if (!reloadPending) return; if (!$('#sheet').hidden || !$('#settings').hidden || !$('#setup').hidden) return; reloadPending = false; location.reload(); };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (!hadController) return; reloadPending = true; reloadNow(); });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { reg.update().catch(() => {}); reloadNow(); } });
+  }).catch(() => {});
+  new MutationObserver(reloadNow).observe(document.body, { attributes: true, subtree: true, attributeFilter: ['hidden'] });
+}
