@@ -1,6 +1,6 @@
 {
-  "name": "Stats",
-  "short_name": "Stats",
+  "name": "Stats v2",
+  "short_name": "Stats v2",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
