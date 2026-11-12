@@ -3,7 +3,7 @@
 // For every look × every label level × phone (375×812) and desktop (1440×900): one screenshot + counted problems.
 //
 //   python3 -m http.server 8790 --directory <this repo>  +  python3 tools/mock-github.py <data copy> 8791
-//   node tools/graph-check.mjs [--out DIR] [--url http://localhost:8790/v2/?api=http://localhost:8791] [--chrome /snap/bin/chromium]
+//   node tools/graph-check.mjs [--out DIR] [--url http://localhost:8790/?api=http://localhost:8791] [--chrome /snap/bin/chromium]
 //
 // Writes DIR/<size>-<look>-<n>-<level>.png, DIR/report.json, DIR/report.md. Exit code 1 if any look fails.
 // Pass rules (per screenshot): 0 overlapping labels · 0 labels cut off · ≤ 1 label level · smallest text ≥ 10 px ·
@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
-const OUT = arg('out', './graph-check-out'), URL = arg('url', 'http://localhost:8790/v2/?api=http://localhost:8791');
+const OUT = arg('out', './graph-check-out'), URL = arg('url', 'http://localhost:8790/?api=http://localhost:8791');
 const CHROME = arg('chrome', '/snap/bin/chromium'), PORT = 9300 + Math.floor(Math.random() * 500);
 const SIZES = [['phone', 375, 812, 2, true], ['desktop', 1440, 900, 1, false]];
 const LOOKS = (arg('looks', 'web,float,rings,tree')).split(',');

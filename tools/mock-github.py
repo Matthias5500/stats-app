@@ -3,7 +3,7 @@
 Serves a local folder as "the repo". Writes (the app's Save) go into that folder, so point it at a COPY.
 
   python3 tools/mock-github.py <data-dir> [port=8791]
-  open http://localhost:8790/v2/?api=http://localhost:8791   (app served by: python3 -m http.server 8790)
+  open http://localhost:8790/?api=http://localhost:8791   (app served by: python3 -m http.server 8790)
 """
 import base64, hashlib, json, os, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

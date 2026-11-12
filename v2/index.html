@@ -2,95 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0e1113">
-<title>Stats v2</title>
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="v2.css">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stats</title>
+<style>body { background: #0b0c14; color: #cbd5e1; font: 15px system-ui, sans-serif; padding: 24px; }</style>
 </head>
 <body>
-<header class="top">
-  <h1 id="page-title" class="page-title">Today</h1>
-  <div class="range" role="group" aria-label="Time range" hidden>
-    <button data-range="7" class="on">7d</button>
-    <button data-range="30">30d</button>
-    <button data-range="all">All</button>
-  </div>
-  <button id="refresh" class="icon-btn" aria-label="Refresh">↻</button>
-  <button id="open-settings" class="icon-btn" aria-label="Settings">⚙</button>
-</header>
-<p id="status" class="status"></p>
-
-<section id="p-today" class="page" aria-label="Today">
-  <div id="day-head"></div>
-  <div id="upd-card"></div>
-  <div id="questions"></div>
-  <div id="sched"></div>
-  <section id="today" class="today" aria-label="Quick logs"></section>
-  <div id="day-body"></div>
-</section>
-<section id="p-stats" class="page" aria-label="Stats" hidden>
-  <main id="cards" class="cards"></main>
-</section>
-<section id="p-study" class="page" aria-label="Study" hidden>
-  <div id="study-sub" class="seg seg-2"></div>
-  <div id="study-over" class="cards"></div>
-  <section id="graph" class="graph" aria-label="Concept graph" hidden></section>
-</section>
-<section id="p-notes" class="page" aria-label="Notes" hidden></section>
-<section id="p-home" class="page" aria-label="Home" hidden></section>
-
-<div id="savebar"></div>
-<nav class="nav" aria-label="Sections">
-  <button data-tab="today"><i>☀️</i><span>Today</span></button>
-  <button data-tab="stats"><i>📊</i><span>Stats</span></button>
-  <button data-tab="study"><i>🎓</i><span>Study</span></button>
-  <button data-tab="notes"><i>💭</i><span>Notes</span></button>
-  <button data-tab="home"><i>🏠</i><span>Home</span></button>
-</nav>
-
-<section id="sheet" class="sheet" hidden></section>
-<div id="toast" class="toast" role="status" hidden></div>
-
-<section id="setup" class="sheet" hidden>
-  <h2>Connect your repo</h2>
-  <p>Paste a GitHub fine-grained token with <b>Contents: Read and write</b> on your data repo. It stays on this device only.</p>
-  <label for="token">Token</label>
-  <input id="token" type="password" autocomplete="off" placeholder="github_pat_…">
-  <label for="repo">Repo</label>
-  <input id="repo" type="text" placeholder="owner/repo" autocapitalize="off" autocorrect="off" spellcheck="false">
-  <button id="save-token" class="primary">Save + load</button>
-</section>
-
-<section id="settings" class="sheet" hidden>
-  <h2>Stats layout</h2>
-  <div id="layout-pick" class="layout-pick"></div>
-  <h2>Quick buttons</h2>
-  <p>Ticked = favourite, always on top (as many as you like). ✨ smart ones pop up by themselves when it's their moment; everything else sits behind ＋.</p>
-  <ul id="fav-list" class="card-list"></ul>
-  <h2>Stats cards</h2>
-  <p>Switch cards on/off and move them. Big/Small = full-width card or small tile in the Tiles layout.</p>
-  <ul id="card-list" class="card-list"></ul>
-  <h2>Theme</h2>
-  <div id="theme-pick" class="theme-pick">
-    <button data-pick="glass"><i></i>Glass</button>
-    <button data-pick="classic"><i></i>Classic</button>
-  </div>
-  <h2>Versions</h2>
-  <p>This is v2. The old app is still there and uses the same login and data.</p>
-  <a class="btn-link" href="../">Open the old app</a>
-  <h2>Connection</h2>
-  <button id="change-token">Change token</button>
-  <button id="close-settings" class="primary">Done</button>
-</section>
-<script src="vendor/d3-force.min.js"></script>
-<script src="body.js"></script>
-<script src="app.js"></script>
-<script src="log.js"></script>
-<script src="v2.js"></script>
-<script src="graph.js"></script>
+<p>Stats moved to the main address. <a href="../" style="color:#67e8f9">Open it</a>.</p>
+<script>
+// v2 became the main app on 12.11: drop the old /v2/ service worker, then go to the main address (keeps ?api= for local tests)
+(async () => {
+  try { for (const r of await navigator.serviceWorker.getRegistrations()) if (new URL(r.scope).pathname.endsWith('/v2/')) await r.unregister(); } catch { /* none */ }
+  location.replace('../' + location.search);
+})();
+</script>
 </body>
 </html>

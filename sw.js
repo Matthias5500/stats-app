@@ -1,8 +1,8 @@
 // Caches the app shell so it opens offline; data always comes fresh from GitHub (app.js keeps the last copy).
-const SHELL = 'stats-v15'; // bump together with APP_V in app.js
-const FILES = ['./', 'index.html', 'style.css', 'app.js', 'log.js', 'body.js', 'graph.js', 'vendor/d3-force.min.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png'];
+const SHELL = 'stats2-v3'; // bump together with APP_V in app.js
+const FILES = ['./', 'index.html', 'style.css', 'v2.css', 'app.js', 'log.js', 'v2.js', 'body.js', 'graph.js', 'vendor/d3-force.min.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES))); self.skipWaiting(); });
-self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== SHELL).map((k) => caches.delete(k))))); self.clients.claim(); });
+self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => /^stats2?-/.test(k) && k !== SHELL).map((k) => caches.delete(k))))); self.clients.claim(); });
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return;

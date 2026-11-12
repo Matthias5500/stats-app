@@ -10,6 +10,8 @@ const HEADERS = {
   spend: 'date,time,eur,what,category',
   piano: 'date,time,minutes,note',
   notes: 'date,time,kind,text,done',
+  questions: 'id,date,kind,text,options,answer,answered',
+  food: 'date,time,meal,item,kcal,protein_g,where,source,with,cost_eur,tags,note',
 };
 
 const cell = (v) => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v; };
@@ -22,10 +24,12 @@ const kg = (v) => String(Math.round(Number(v) * 100) / 100);
 const staged = () => LS.get('staged', []);
 function stage(item) {
   LS.set('staged', [...staged(), { id: Date.now() + Math.random(), date: nowKey(), ...item }]);
-  toast((item.op === 'del' ? 'Undo noted: ' : 'Noted: ') + item.label + ' · hit Save to keep it');
-  renderToday();
+  toast((item.op === 'del' ? 'Undo noted: ' : item.op === 'set' ? 'Change noted: ' : 'Noted: ') + item.label + ' · hit Save to keep it');
+  rerender();
 }
-const unstage = (id) => { LS.set('staged', staged().filter((x) => x.id !== id)); renderToday(); };
+const unstage = (id) => { LS.set('staged', staged().filter((x) => x.id !== id)); rerender(); };
+// redraw the open page + the Save pill (the pill sits outside the pages, so it shows on every tab)
+const rerender = () => { render(); };
 
 // ---------- GitHub: all staged changes in one commit (git data API) ----------
 const b64d = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
@@ -36,7 +40,11 @@ function applyOps(text, header, ops) {
   let lines = text.replace(/\n+$/, '').split('\n');
   for (const op of ops) {
     if (op.op === 'add') lines.push(...op.rows.map(line));
-    else {
+    else if (op.op === 'set') {
+      // v2: change fields of the newest row that matches (dump text / resolved mark, answer to a question, a missing price)
+      const head = csv(lines[0] + '\n' + lines[0])[0] ? Object.keys(csv(lines[0] + '\n' + lines[0])[0]) : lines[0].split(',');
+      for (let i = lines.length - 1; i > 0; i--) { const row = csv(lines[0] + '\n' + lines[i])[0] || {}; if (sameRow(row, op.match)) { lines[i] = line(head.map((h) => (h in op.set ? op.set[h] : row[h] ?? ''))); break; } }
+    } else {
       // gym undo removes the whole workout (all rows of that date+time); everything else one row, newest first
       const hit = (l) => sameRow(csv(lines[0] + '\n' + l)[0] || {}, op.match);
       if (op.kind === 'gym') lines = [lines[0], ...lines.slice(1).filter((l) => !hit(l))];
@@ -48,7 +56,7 @@ function applyOps(text, header, ops) {
 
 async function commitStaged(items) {
   const { token, repo } = LS.get('conn', {});
-  const api = `https://api.github.com/repos/${repo}`;
+  const api = `${API}/repos/${repo}`;
   const H = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json' };
   const call = async (path, opts = {}) => {
     const r = await fetch(api + path, { cache: 'no-store', ...opts, headers: { ...H, ...(opts.body ? { 'Content-Type': 'application/json' } : {}) } });
@@ -57,8 +65,8 @@ async function commitStaged(items) {
     return r;
   };
   const byPath = {};
-  for (const it of items) (byPath[F(it.kind)] ||= { header: HEADERS[it.kind], ops: [] }).ops.push(it);
-  const message = 'app: ' + items.map((i) => (i.op === 'del' ? 'undo ' : '') + i.label).join(' · ');
+  for (const it of items) (byPath[F(it.kind) || F2(it.kind)] ||= { header: HEADERS[it.kind], ops: [] }).ops.push(it);
+  const message = 'app: ' + items.map((i) => (i.op === 'del' ? 'undo ' : i.op === 'set' ? 'edit ' : '') + i.label).join(' · ');
   for (let attempt = 0; attempt < 3; attempt++) {
     const ref = await call('/git/ref/heads/main'); if (!ref.ok) throw new Error('GitHub ' + ref.status);
     const parent = (await ref.json()).object.sha;
@@ -86,7 +94,7 @@ let saving = false;
 async function saveAll() {
   const items = staged();
   if (saving || !items.length) return;
-  saving = true; renderToday();
+  saving = true; rerender();
   try {
     await commitStaged(items);
     const done = new Set(items.map((i) => i.id));
@@ -98,12 +106,37 @@ async function saveAll() {
     saving = false;
     toast(`Not saved (${e.message === 'auth' ? 'token rejected' : e instanceof TypeError ? 'offline' : e.message}). Still on the phone, try Save again.`);
   }
-  renderToday();
+  rerender();
 }
 
 // ---------- small UI helpers ----------
 const sheet = () => $('#sheet');
+// ---------- phone back gesture (12.11): every layer (sheet, settings, a picked day, a tab other than Today) adds one history step,
+// so a back swipe closes that layer instead of the whole app. UI closes (✕, Done, nav) take their own step back silently.
+// A close followed right away by an open (calendar → picked day) reuses the closed layer's step (replaceState): a queued
+// history.back() would otherwise land behind the new step and the next swipe would leave the app.
+const HIST = { stack: [], ignore: 0, pend: 0 };
+function histPush(layer) {
+  HIST.stack.push(layer);
+  try { if (HIST.pend) { HIST.pend--; history.replaceState({ layer }, ''); } else history.pushState({ layer }, ''); } catch { /* ignore */ }
+}
+function histDrop(layer) { // the UI closed `layer` itself
+  if (HIST.stack[HIST.stack.length - 1] !== layer) return;
+  HIST.stack.pop(); HIST.pend++;
+  setTimeout(() => { if (HIST.pend) { HIST.pend--; HIST.ignore++; history.back(); } }, 0);
+}
+window.addEventListener('popstate', () => {
+  if (HIST.ignore) { HIST.ignore--; return; }
+  const layer = HIST.stack.pop();
+  if (layer === 'sheet') { sheet().hidden = true; sheet().innerHTML = ''; }
+  else if (layer === 'settings') { $('#settings').hidden = true; render(); }
+  else if (layer === 'day') { window.viewDay = null; render(); }
+  else if (layer === 'tab') showTab('today', true);
+});
+window.histPush = histPush; window.histDrop = histDrop;
+
 function openSheet(title, html, wire) {
+  if (sheet().hidden) histPush('sheet');
   // fresh inner element each time, so listeners never pile up on the sheet itself
   sheet().innerHTML = `<div class="sheet-in"><div class="sheet-head"><h2>${title}</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>${html}</div>`;
   sheet().hidden = false;
@@ -111,7 +144,7 @@ function openSheet(title, html, wire) {
   root.querySelector('[data-close]').addEventListener('click', closeSheet);
   wire?.(root);
 }
-function closeSheet() { sheet().hidden = true; sheet().innerHTML = ''; }
+function closeSheet() { const was = !sheet().hidden; sheet().hidden = true; sheet().innerHTML = ''; if (was) histDrop('sheet'); }
 let toastTimer;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
@@ -181,10 +214,14 @@ window.renderToday = function () {
   const waiting = pendingNotes();
   el.innerHTML = `
     <div class="quick">${f.map((id) => btnHtml(BUTTONS.find((b) => b.id === id), t)).join('')}${smart.map((b) => btnHtml(b, t, true)).join('')}<button id="q-more" class="plus" aria-label="More">＋</button></div>
-    ${waiting ? `<p class="waiting">⏳ ${waiting} note${waiting === 1 ? '' : 's'} waiting for boss</p>` : ''}
-    ${items.length ? `<button class="save-pill" id="save-pill">${saving ? 'Saving…' : `💾 Save ${items.length}`}</button>` : ''}`;
+    ${waiting ? `<p class="waiting">⏳ ${waiting} note${waiting === 1 ? '' : 's'} waiting for boss</p>` : ''}`;
   wireButtons(el);
   $('#q-more').addEventListener('click', openMore);
+};
+window.renderSavebar = function () {
+  const el = $('#savebar'), items = staged();
+  if (!el) return;
+  el.innerHTML = items.length ? `<button class="save-pill" id="save-pill">${saving ? 'Saving…' : `💾 Save ${items.length}`}</button>` : '';
   $('#save-pill')?.addEventListener('click', openUnsaved);
 };
 function openMore() {
@@ -197,7 +234,7 @@ function openMore() {
 function openUnsaved() {
   const items = staged();
   if (!items.length) { closeSheet(); return; }
-  openSheet(`Not saved yet · ${items.length}`, `<ul class="list unsaved-list">${items.map((i) => `<li><span>${i.op === 'del' ? '🗑️ undo ' : ''}${esc(i.label)}</span><button class="x" data-unstage="${i.id}" aria-label="Remove">✕</button></li>`).join('')}</ul>
+  openSheet(`Not saved yet · ${items.length}`, `<ul class="list unsaved-list">${items.map((i) => `<li><span>${i.op === 'del' ? '🗑️ undo ' : i.op === 'set' ? '✏️ ' : ''}${esc(i.label)}</span><button class="x" data-unstage="${i.id}" aria-label="Remove">✕</button></li>`).join('')}</ul>
     <button class="primary" id="save-all" ${saving ? 'disabled' : ''}>${saving ? 'Saving…' : `Save ${items.length} change${items.length === 1 ? '' : 's'}`}</button>`, (r) => {
     r.querySelectorAll('[data-unstage]').forEach((b) => b.addEventListener('click', () => { unstage(Number(b.dataset.unstage)); openUnsaved(); }));
     r.querySelector('#save-all').addEventListener('click', () => { closeSheet(); saveAll(); });
@@ -421,9 +458,11 @@ function openNight(picked = {}) {
     paint();
     r.querySelectorAll('[data-h]').forEach((b) => b.addEventListener('click', () => { habit(b.dataset.h, '1', MOUTH[b.dataset.h]); openNight(pick); }));
     r.querySelector('#n-save').addEventListener('click', () => {
-      const now = clock(Date.now()), rows = [[nowKey(), now, 'asleep', at]];
-      if (pick.mood) rows.push([nowKey(), now, 'mood', pick.mood]);
-      if (pick.energy) rows.push([nowKey(), now, 'energy', pick.energy]);
+      // goodnight between 04:00 and noon = the night that started on the previous day key (the day rolled over at 04:00)
+      const now = clock(Date.now()), hr = Number(now.slice(0, 2)), nk = hr >= (CFG.dayStartHour || 4) && hr < 12 ? addDays(nowKey(), -1) : nowKey();
+      const rows = [[nk, now, 'asleep', at]];
+      if (pick.mood) rows.push([nk, now, 'mood', pick.mood]);
+      if (pick.energy) rows.push([nk, now, 'energy', pick.energy]);
       stage({ kind: 'habits', op: 'add', rows, label: `goodnight ${at}` + (pick.mood ? ` · mood ${pick.mood}` : '') + (pick.energy ? ` · energy ${pick.energy}` : '') });
       closeSheet();
     });
@@ -486,7 +525,7 @@ function logTable(name, done, prev) {
   if (!n) return '';
   return `<table class="st log"><thead><tr><th>Set</th><th>Previous</th><th>${isAssist(name) ? 'Assist kg' : 'kg'}</th><th>Reps</th><th></th></tr></thead><tbody>${Array.from({ length: n }, (_, j) => {
     const s = done[j];
-    return `<tr class="${s ? '' : 'todo'}${j === b ? ' best' : ''}"><td>${j + 1}</td><td class="prev">${prevTxt(prev[j])}</td><td>${s ? (s.kg ? kg(s.kg) : '—') : ''}</td><td>${s ? s.reps : ''}</td><td>${s ? `<button class="x" data-del="${esc(name)}:${j}" aria-label="Delete set ${j + 1}">✕</button>` : ''}</td></tr>`; }).join('')}</tbody></table>`;
+    return `<tr class="${s ? '' : 'todo'}${j === b ? ' best' : ''}"><td>${j + 1}</td><td class="prev">${prevTxt(prev[j])}</td><td>${s ? (s.kg ? kg(s.kg) : '—') : ''}</td><td>${s ? s.reps : ''}</td><td>${s ? `<button class="x" data-del="${esc(name)}:${j}" aria-label="Delete set ${j + 1}">✕</button>` : ''}</td></tr>${s?.note ? `<tr class="st-note"><td></td><td colspan="4">📝 ${esc(s.note)}</td></tr>` : ''}`; }).join('')}</tbody></table>`;
 }
 
 function openGym() {
@@ -513,6 +552,7 @@ function openGym() {
         <div class="ex-head">${muscleIcon(muscleOf(name))}<b>${esc(name)}</b><span class="sub">${info ? `last time ${dm(info.date)}` : 'first time'}</span></div>
         ${logTable(name, done, prev)}
         <div class="set-row">${stepper('kg' + i, kg(next.kg), step, 'kg')}${stepper('reps' + i, next.reps, 1, 'reps')}
+        <input type="text" class="set-note" id="note${i}" placeholder="Note for this set (optional)" autocomplete="off" enterkeyhint="done">
         <button class="primary small" data-add="${i}">+ Set ${done.length + 1}</button></div>
       </section>`;
     }).join('')}
@@ -528,7 +568,8 @@ function openGym() {
     const put = (w) => { const d = Number(r.querySelector('#g-dur').value); if (d && d !== dur) w.dur = d; const y = sheet().scrollTop; LS.set('workout', w); openGym(); sheet().scrollTop = y; };
     r.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
       const i = b.dataset.add, name = wo.list[i];
-      (wo.sets[name] ||= []).push({ reps: Number(r.querySelector('#reps' + i).value) || 0, kg: Number(r.querySelector('#kg' + i).value) || 0 });
+      const note = r.querySelector('#note' + i).value.trim().replace(/\s+/g, ' ');
+      (wo.sets[name] ||= []).push({ reps: Number(r.querySelector('#reps' + i).value) || 0, kg: Number(r.querySelector('#kg' + i).value) || 0, ...(note ? { note } : {}) });
       put(wo);
     }));
     r.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
@@ -541,13 +582,13 @@ function openGym() {
     } });
     r.querySelector('#g-finish').addEventListener('click', () => {
       const date = dayKey(wo.start), time = clock(wo.start), rows = [];
-      for (const name of wo.list) (wo.sets[name] || []).forEach((s, j) => rows.push([date, time, wo.type, name, j + 1, s.reps, kg(s.kg), '']));
+      for (const name of wo.list) (wo.sets[name] || []).forEach((s, j) => rows.push([date, time, wo.type, name, j + 1, s.reps, kg(s.kg), s.note || '']));
       if (!rows.length) { toast('No sets logged yet'); return; }
       // duration rides in the first row's note ("session 58 min"), so the CSV header stays the same
       // untouched field = real elapsed time now (the field only shows the minutes from the last redraw)
       const v = Number(r.querySelector('#g-dur').value) || 0;
       const m = Math.round(wo.dur == null && v === dur ? Math.max(1, (Date.now() - wo.start) / 60e3) : v);
-      if (m > 0) rows[0][7] = `session ${m} min`;
+      if (m > 0) rows[0][7] = `session ${m} min` + (rows[0][7] ? ' · ' + rows[0][7] : ''); // the set's own note stays after the duration
       const ex = new Set(rows.map((x) => x[3])).size;
       LS.remove('workout');
       stage({ kind: 'gym', op: 'add', rows, label: `gym ${wo.type} · ${ex} exercise${ex === 1 ? '' : 's'}, ${rows.length} sets${m > 0 ? `, ${m} min` : ''}`, marks: { gym: true } });

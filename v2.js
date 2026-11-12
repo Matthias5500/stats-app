@@ -29,7 +29,7 @@ function drawDayHead(k, isToday) {
     ${d.score != null ? `<span class="chip">⭐ ${d.score}/10${d.final ? '' : ' ?'}</span>` : ''}
   </div>`;
   $('#pick-day').addEventListener('click', () => openCalendar(k.slice(0, 7)));
-  $('#back-today')?.addEventListener('click', () => { window.viewDay = null; render(); });
+  $('#back-today')?.addEventListener('click', () => { window.viewDay = null; histDrop('day'); render(); });
 }
 
 function drawUpdateCard(isToday) {
@@ -181,9 +181,10 @@ function openCalendar(month) {
     <div class="cal-row dow">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => `<span>${d}</span>`).join('')}</div>${rows}</div>
     <div class="cal-key"><span><i class="m-study"></i>studied</span><span><i class="m-train"></i>trained</span><span><i class="m-dead"></i>deadline</span></div>
     <button id="cal-today">Back to today</button>`, (r) => {
-    r.querySelectorAll('[data-k]').forEach((b) => b.addEventListener('click', () => { window.viewDay = b.dataset.k === today ? null : b.dataset.k; closeSheet(); window.scrollTo(0, 0); render(); }));
+    r.querySelectorAll('[data-k]').forEach((b) => b.addEventListener('click', () => { const was = window.viewDay; window.viewDay = b.dataset.k === today ? null : b.dataset.k; closeSheet();
+      if (window.viewDay && !was) histPush('day'); else if (!window.viewDay && was) histDrop('day'); window.scrollTo(0, 0); render(); }));
     r.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => openCalendar(shift(Number(b.dataset.nav)))));
-    r.querySelector('#cal-today').addEventListener('click', () => { window.viewDay = null; closeSheet(); render(); });
+    r.querySelector('#cal-today').addEventListener('click', () => { const was = window.viewDay; window.viewDay = null; closeSheet(); if (was) histDrop('day'); render(); });
   });
 }
 

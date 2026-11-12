@@ -66,7 +66,12 @@ button.chip { cursor: pointer; }
 /* sleep chart */
 .sleep-chart { height: 104px !important; }
 .sleep-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 2px; }
-.tile .sleep-axis { display: none; } .tile .sleep-chart { height: 30px !important; }
+.tile .sleep-y { display: none; } .tile .sleep-wrap { display: block; } .tile .sleep-chart { height: 30px !important; }
+/* sleep y-axis (12.11): clock labels on the left at the grid lines */
+.sleep-wrap { display: grid; grid-template-columns: 34px 1fr; align-items: start; }
+.sleep-y { position: relative; height: 104px; margin-top: 8px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sleep-y span { position: absolute; right: 4px; transform: translateY(-50%); line-height: 1; }
+.chart.has-sel [data-b]:not(.sel) { opacity: .35; }
 
 /* connected statements */
 .conn-row { margin-top: 10px; display: grid; gap: 3px; }
