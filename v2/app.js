@@ -362,7 +362,8 @@ const MUSCLE_OF = { // only names he has actually logged; anything else goes thr
   'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back',
   'Preacher curls': 'Biceps',
   'Squat': 'Legs', 'Leg press': 'Legs', // separate exercises (v2 slice 7)
-  'Squat / leg press': 'Legs', // old combined name, kept so that history still adds up 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
+  'Squat / leg press': 'Legs', // old combined name, kept so that history still adds up
+  'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
   'Decline weighted situps': 'Core', 'Back extensions': 'Core',
 };
 const MUSCLE_RULES = [ // order matters: "leg curl" is legs, "back extension" is core
