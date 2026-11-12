@@ -57,7 +57,7 @@ function questions() {
   for (const q of DATA.questions || []) {
     if (q.answer || !q.id || !q.text) continue;
     add({ id: 'boss:' + q.id, text: q.text, type: q.kind || 'text', options: (q.options || '').split('|').map((o) => o.trim()).filter(Boolean), from: 'boss',
-      answer: (v) => stage({ kind: 'questions', op: 'set', match: { id: q.id }, set: { answer: v, answered: `${nowKey()} ${hhmm()}` }, label: `answer “${q.text.slice(0, 28)}${q.text.length > 28 ? '…' : ''}” → ${v}`, qid: 'boss:' + q.id }) });
+      answer: (v) => stage({ kind: 'questions', op: 'set', match: { id: q.id }, set: { answer: v, answered: `${fmtKey.format(new Date())} ${hhmm()}` }, label: `answer “${q.text.slice(0, 28)}${q.text.length > 28 ? '…' : ''}” → ${v}`, qid: 'boss:' + q.id }) });
   }
   // nights without a sleep time (last 3; today's own night belongs to 😴 Night)
   const firstSleep = (DATA.habits || []).filter((r) => r.habit === 'asleep').map((r) => r.date).sort()[0];

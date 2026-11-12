@@ -521,16 +521,16 @@
         seg(st.id, st.parent.id, ...trim(sx(st.parent.x), sy(st.parent.y), sx(st.x), sy(st.y), dotR(st.parent), dotR(st)).slice(0, 4));
       }
       // chains: premises meet in a junction dot, one line to the result
-      ctx.strokeStyle = c.accent; ctx.fillStyle = c.accent; ctx.lineWidth = lw * 1.2;
+      ctx.strokeStyle = c.fg; ctx.fillStyle = c.fg; ctx.lineWidth = lw * 1.1; // light, not accent: teal already means "solid"
       for (const ch of g.chains) {
         const all = [...ch.from, ch.to]; if (all.some((d) => !visSet.has(d.id))) continue;
-        ctx.globalAlpha = 0.75 * Math.min(...all.map(alphaOf));
+        ctx.globalAlpha = 0.55 * Math.min(...all.map(alphaOf));
         const P = ch.from.map((d) => [sx(d.x), sy(d.y), dotR(d), d.id]), C = [sx(ch.to.x), sy(ch.to.y), dotR(ch.to), ch.to.id];
         if (P.length === 1) { seg(P[0][3], C[3], ...trim(P[0][0], P[0][1], C[0], C[1], P[0][2], C[2] + 1).slice(0, 4)); continue; }
         const mx = P.reduce((a, p) => a + p[0], 0) / P.length, my = P.reduce((a, p) => a + p[1], 0) / P.length, jx = (mx + C[0]) / 2, jy = (my + C[1]) / 2;
         for (const p of P) seg(p[3], 'j:' + ch.raw, ...trim(p[0], p[1], jx, jy, p[2], 0).slice(0, 4));
         seg('j:' + ch.raw, C[3], ...trim(jx, jy, C[0], C[1], 0, C[2] + 1).slice(0, 4));
-        ctx.beginPath(); ctx.arc(jx, jy, 2.2, 0, 2 * Math.PI); ctx.fill();
+        ctx.beginPath(); ctx.arc(jx, jy, 1.5, 0, 2 * Math.PI); ctx.fill();
       }
       // dots
       for (const d of vis) {

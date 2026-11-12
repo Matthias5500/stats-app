@@ -24,7 +24,7 @@ applyTheme();
 // localhost only: ?api=http://localhost:8791 points the app at tools/mock-github.py (tests never touch the real repo)
 const API = (['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).get('api')) || 'https://api.github.com';
 const H = 3600e3;
-const APP_V = 'v2.0'; // shown in the status line; bump together with SHELL in sw.js
+const APP_V = 'v2.1'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
@@ -361,8 +361,8 @@ const MUSCLE_OF = { // only names he has actually logged; anything else goes thr
   'Shoulder press': 'Shoulders', 'Lateral raise machine': 'Shoulders',
   'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back',
   'Preacher curls': 'Biceps',
-  'Squat': 'Legs', 'Leg press': 'Legs', // separate exercises since 12.11 (his call 9.11: different categories)
-  'Squat / leg press': 'Legs', // old combined name (one workout, 30.10), kept so that history still adds up 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
+  'Squat': 'Legs', 'Leg press': 'Legs', // separate exercises (v2 slice 7)
+  'Squat / leg press': 'Legs', // old combined name, kept so that history still adds up 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
   'Decline weighted situps': 'Core', 'Back extensions': 'Core',
 };
 const MUSCLE_RULES = [ // order matters: "leg curl" is legs, "back extension" is core
