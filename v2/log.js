@@ -500,7 +500,7 @@ function logTable(name, done, prev) {
   if (!n) return '';
   return `<table class="st log"><thead><tr><th>Set</th><th>Previous</th><th>${isAssist(name) ? 'Assist kg' : 'kg'}</th><th>Reps</th><th></th></tr></thead><tbody>${Array.from({ length: n }, (_, j) => {
     const s = done[j];
-    return `<tr class="${s ? '' : 'todo'}${j === b ? ' best' : ''}"><td>${j + 1}</td><td class="prev">${prevTxt(prev[j])}</td><td>${s ? (s.kg ? kg(s.kg) : '—') : ''}</td><td>${s ? s.reps : ''}</td><td>${s ? `<button class="x" data-del="${esc(name)}:${j}" aria-label="Delete set ${j + 1}">✕</button>` : ''}</td></tr>`; }).join('')}</tbody></table>`;
+    return `<tr class="${s ? '' : 'todo'}${j === b ? ' best' : ''}"><td>${j + 1}</td><td class="prev">${prevTxt(prev[j])}</td><td>${s ? (s.kg ? kg(s.kg) : '—') : ''}</td><td>${s ? s.reps : ''}</td><td>${s ? `<button class="x" data-del="${esc(name)}:${j}" aria-label="Delete set ${j + 1}">✕</button>` : ''}</td></tr>${s?.note ? `<tr class="st-note"><td></td><td colspan="4">📝 ${esc(s.note)}</td></tr>` : ''}`; }).join('')}</tbody></table>`;
 }
 
 function openGym() {
@@ -527,6 +527,7 @@ function openGym() {
         <div class="ex-head">${muscleIcon(muscleOf(name))}<b>${esc(name)}</b><span class="sub">${info ? `last time ${dm(info.date)}` : 'first time'}</span></div>
         ${logTable(name, done, prev)}
         <div class="set-row">${stepper('kg' + i, kg(next.kg), step, 'kg')}${stepper('reps' + i, next.reps, 1, 'reps')}
+        <input type="text" class="set-note" id="note${i}" placeholder="Note for this set (optional)" autocomplete="off" enterkeyhint="done">
         <button class="primary small" data-add="${i}">+ Set ${done.length + 1}</button></div>
       </section>`;
     }).join('')}
@@ -542,7 +543,8 @@ function openGym() {
     const put = (w) => { const d = Number(r.querySelector('#g-dur').value); if (d && d !== dur) w.dur = d; const y = sheet().scrollTop; LS.set('workout', w); openGym(); sheet().scrollTop = y; };
     r.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => {
       const i = b.dataset.add, name = wo.list[i];
-      (wo.sets[name] ||= []).push({ reps: Number(r.querySelector('#reps' + i).value) || 0, kg: Number(r.querySelector('#kg' + i).value) || 0 });
+      const note = r.querySelector('#note' + i).value.trim().replace(/\s+/g, ' ');
+      (wo.sets[name] ||= []).push({ reps: Number(r.querySelector('#reps' + i).value) || 0, kg: Number(r.querySelector('#kg' + i).value) || 0, ...(note ? { note } : {}) });
       put(wo);
     }));
     r.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
@@ -555,13 +557,13 @@ function openGym() {
     } });
     r.querySelector('#g-finish').addEventListener('click', () => {
       const date = dayKey(wo.start), time = clock(wo.start), rows = [];
-      for (const name of wo.list) (wo.sets[name] || []).forEach((s, j) => rows.push([date, time, wo.type, name, j + 1, s.reps, kg(s.kg), '']));
+      for (const name of wo.list) (wo.sets[name] || []).forEach((s, j) => rows.push([date, time, wo.type, name, j + 1, s.reps, kg(s.kg), s.note || '']));
       if (!rows.length) { toast('No sets logged yet'); return; }
       // duration rides in the first row's note ("session 58 min"), so the CSV header stays the same
       // untouched field = real elapsed time now (the field only shows the minutes from the last redraw)
       const v = Number(r.querySelector('#g-dur').value) || 0;
       const m = Math.round(wo.dur == null && v === dur ? Math.max(1, (Date.now() - wo.start) / 60e3) : v);
-      if (m > 0) rows[0][7] = `session ${m} min`;
+      if (m > 0) rows[0][7] = `session ${m} min` + (rows[0][7] ? ' · ' + rows[0][7] : ''); // the set's own note stays after the duration
       const ex = new Set(rows.map((x) => x[3])).size;
       LS.remove('workout');
       stage({ kind: 'gym', op: 'add', rows, label: `gym ${wo.type} · ${ex} exercise${ex === 1 ? '' : 's'}, ${rows.length} sets${m > 0 ? `, ${m} min` : ''}`, marks: { gym: true } });

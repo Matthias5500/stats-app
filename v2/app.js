@@ -361,7 +361,8 @@ const MUSCLE_OF = { // only names he has actually logged; anything else goes thr
   'Shoulder press': 'Shoulders', 'Lateral raise machine': 'Shoulders',
   'Seated cable row': 'Back', 'Assisted pull-up (assist kg)': 'Back',
   'Preacher curls': 'Biceps',
-  'Squat / leg press': 'Legs', 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
+  'Squat': 'Legs', 'Leg press': 'Legs', // separate exercises since 12.11 (his call 9.11: different categories)
+  'Squat / leg press': 'Legs', // old combined name (one workout, 30.10), kept so that history still adds up 'Seated calf raises': 'Legs', 'Leg extensions': 'Legs', 'Leg curl': 'Legs', 'Adductor': 'Legs',
   'Decline weighted situps': 'Core', 'Back extensions': 'Core',
 };
 const MUSCLE_RULES = [ // order matters: "leg curl" is legs, "back extension" is core
@@ -408,10 +409,11 @@ function bestIdx(sets, assist) { // heaviest (assist: least help), then most rep
   return b;
 }
 const prevTxt = (s) => (!s ? '—' : s.kg ? `${kg(s.kg)} × ${s.reps}` : `${s.reps} reps`);
-function setTable(sets, name) {
+// perSet: notes differ between sets → each note sits under its own set (one shared note goes below the table, see exBlock)
+function setTable(sets, name, perSet = false) {
   const b = sets.length > 1 ? bestIdx(sets, isAssist(name)) : -1;
   return `<table class="st"><thead><tr><th>Set</th><th>${isAssist(name) ? 'Assist kg' : 'kg'}</th><th>Reps</th></tr></thead><tbody>${sets.map((s, i) =>
-    `<tr class="${i === b ? 'best' : ''}"><td>${i + 1}</td><td>${s.kg ? kg(s.kg) : '—'}</td><td>${s.reps}</td></tr>`).join('')}</tbody></table>`;
+    `<tr class="${i === b ? 'best' : ''}"><td>${i + 1}</td><td>${s.kg ? kg(s.kg) : '—'}</td><td>${s.reps}</td></tr>${perSet && s.note ? `<tr class="st-note"><td></td><td colspan="2">📝 ${esc(s.note)}</td></tr>` : ''}`).join('')}</tbody></table>`;
 }
 // short form for tight spots: "35 kg × 8, 8, 5" · mixed "30 kg × 6 · 25 kg × 8, 5" · bodyweight "7, 5 reps"
 function shortSets(sets) {
@@ -422,7 +424,8 @@ function shortSets(sets) {
 }
 function exBlock(e) {
   const notes = [...new Set(e.sets.map((x) => x.note).filter(Boolean))];
-  return `<div class="exb"><div class="exb-h">${muscleIcon(muscleOf(e.name))}<b>${esc(e.name)}</b></div>${setTable(e.sets, e.name)}${notes.length ? `<p class="sub">${notes.map(esc).join(' · ')}</p>` : ''}</div>`;
+  const shared = notes.length === 1 && e.sets.every((x) => x.note === notes[0]); // e.g. "from day log" on every set
+  return `<div class="exb"><div class="exb-h">${muscleIcon(muscleOf(e.name))}<b>${esc(e.name)}</b></div>${setTable(e.sets, e.name, notes.length && !shared)}${shared ? `<p class="sub">${esc(notes[0])}</p>` : ''}</div>`;
 }
 const mmss = (m) => { const s = Math.round(m * 60), h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = String(s % 60).padStart(2, '0');
   return h ? `${h}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`; };
@@ -527,7 +530,7 @@ function trainingDetail(x) {
   trainSel ||= lastTrain(x) || x.today;
   const body = {
     cal: '<div class="tcal"></div><div class="tday"></div>',
-    muscles: `<p class="sub">Darker = more sets${zero.length ? ` · <span class="bad">0 sets: ${zero.join(', ')}</span>` : ''}</p>${muscleMap(counts)}`,
+    muscles: `<p class="sub">Stronger colour = more sets${zero.length ? ` · <span class="bad">0 sets: ${zero.join(', ')}</span>` : ''}</p>${muscleMap(counts)}`,
     weeks: `<p class="sub">last 8 weeks${wb.timed && all.some((s) => s.mins == null) ? ` · hollow = not timed, counted as ~${wb.med} min` : wb.timed ? '' : ' · sets per week until workouts are timed'}</p>${wb.chart}<div class="detail gw-detail"></div>`,
     progress: `<p class="sub">Top set over time · tap a row for the chart</p>${progressRows(all)}`,
     runs: runs.length ? runTable(runs) : '<p class="sub">No runs logged in the app yet.</p>',

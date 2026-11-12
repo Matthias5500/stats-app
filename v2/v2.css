@@ -100,3 +100,16 @@ button.chip { cursor: pointer; }
 body.graph-on #study-sub { max-width: 720px; margin-inline: auto; width: 100%; }
 #questions, #day-body { display: grid; gap: 10px; }
 #questions:empty, #upd-card:empty, #sched:empty, #day-head:empty, #savebar:empty { display: none; }
+/* slice 7: per-set gym notes */
+.set-note { grid-column: 1 / -1; }
+.st tr.st-note td { border-top: 0; padding: 0 4px 6px; text-align: left; font-size: 12px; color: var(--muted); }
+/* slice 8: graph looks + label level + one-line help under every setting */
+#graph.graph { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto auto 1fr; gap: 6px; height: auto; min-height: 0; }
+body.graph-on #p-study { display: flex; flex-direction: column; gap: 8px; height: calc(100dvh - var(--top-h, 64px) - var(--nav-h, 64px) - env(safe-area-inset-bottom, 0px) - 16px); min-height: 360px; }
+body.graph-on #p-study[hidden] { display: none; }
+body.graph-on #graph { flex: 1; min-height: 0; }
+.g-looks button { font-weight: 600; }
+.g-look-txt { margin: 0; font-size: 12px; line-height: 1.3; min-height: 2.6em; }
+.g-level { position: absolute; right: 10px; top: 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+.g-help { margin: -2px 0 8px; font-size: 12px; }
+.g-legend, .g-level { background: color-mix(in srgb, var(--bg) 72%, transparent); padding: 2px 6px; border-radius: 8px; }
