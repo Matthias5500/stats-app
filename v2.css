@@ -40,6 +40,7 @@ button.chip { cursor: pointer; }
 .q-row button { flex: 1; padding: 11px 8px; font-weight: 600; min-width: 0; }
 .q-row input { flex: 2; min-width: 0; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 .q-row .primary { flex: 0 0 64px; }
+.q-card .q-type { justify-self: start; margin-top: -4px; padding: 2px 0; border: 0; background: transparent; font-size: 12.5px; color: var(--muted); }
 .sched h2 small { text-transform: none; letter-spacing: 0; font-weight: 500; margin-left: 6px; }
 .sched-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 7px; }
 .sched-list li { display: grid; grid-template-columns: 92px 1fr; gap: 8px; font-size: 14.5px; align-items: baseline; }

@@ -98,13 +98,24 @@ function drawQuestions(isToday) {
     const input = q.type === 'time' ? '<input type="time">' : q.type === 'amount' ? '<input type="number" inputmode="decimal" step="0.01" placeholder="0.00">' : '<input type="text" placeholder="short answer">';
     return `<div class="q-row">${input}<button class="primary small" data-ok="${i}">OK</button></div>`;
   };
+  const TYPEABLE = ['yesno', 'scale', 'choice', 'time', 'amount']; // boss questions: "✎ type" swaps the controls for a free-text field
+  const typeLink = (q, i) => q.from === 'boss' && TYPEABLE.includes(q.type) ? `<button class="q-type" data-type="${i}">✎ type</button>` : '';
   el.innerHTML = `<h3 class="sec-h">Questions <small>${qs.length}</small></h3>` + qs.map((q, i) => `<article class="card q-card" data-q="${i}">
-    <div class="q-top"><p>${q.from === 'boss' ? '<span class="q-from">boss</span> ' : ''}${esc(q.text)}</p><button class="x" data-skip="${i}" aria-label="Not now">${q.skip ? esc(q.skip) : '✕'}</button></div>${ctl(q, i)}</article>`).join('');
+    <div class="q-top"><p>${q.from === 'boss' ? '<span class="q-from">boss</span> ' : ''}${esc(q.text)}</p><button class="x" data-skip="${i}" aria-label="Not now">${q.skip ? esc(q.skip) : '✕'}</button></div>${ctl(q, i)}${typeLink(q, i)}</article>`).join('');
   el.querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', () => qs[Number(b.dataset.a)].answer(b.dataset.v)));
-  el.querySelectorAll('[data-ok]').forEach((b) => b.addEventListener('click', () => {
+  const onOk = (b) => b.addEventListener('click', () => {
     const q = qs[Number(b.dataset.ok)], v = b.parentElement.querySelector('input').value.trim();
     if (!v) { toast('Fill it in first'); return; }
-    q.answer(q.type === 'amount' ? Number(v).toFixed(2) : v);
+    q.answer(q.type === 'amount' && !('typed' in b.parentElement.dataset) ? Number(v).toFixed(2) : v); // typed-instead = saved as-is
+  });
+  el.querySelectorAll('[data-ok]').forEach(onOk);
+  el.querySelectorAll('[data-type]').forEach((b) => b.addEventListener('click', () => {
+    const i = b.dataset.type, card = b.closest('.q-card');
+    card.querySelector('.q-top').nextElementSibling.remove();
+    b.outerHTML = `<div class="q-row" data-typed><input type="text" placeholder="type your answer"><button class="primary small" data-ok="${i}">OK</button></div>`;
+    const row = card.querySelector('[data-typed]');
+    onOk(row.querySelector('[data-ok]'));
+    row.querySelector('input').focus();
   }));
   el.querySelectorAll('[data-skip]').forEach((b) => b.addEventListener('click', () => { LS.set('qdismiss', { ...LS.get('qdismiss', {}), [qs[Number(b.dataset.skip)].id]: DATA.today }); render(); }));
 }
