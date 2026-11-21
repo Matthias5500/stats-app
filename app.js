@@ -24,12 +24,14 @@ applyTheme();
 // localhost only: ?api=http://localhost:8791 points the app at tools/mock-github.py (tests never touch the real repo)
 const API = (['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).get('api')) || 'https://api.github.com';
 const H = 3600e3;
-const APP_V = 'v2.3'; // shown in the status line; bump together with SHELL in sw.js
+const APP_V = 'v2.4'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
 // files v2 added; stats.json may name them, else these defaults
-const F2 = (k) => CFG.files[k] || { kitchen: 'life/kitchen.md', questions: 'log/questions.csv', today: '.brief/state/today.json', home: 'home.md' }[k];
+const F2 = (k) => CFG.files[k] || { kitchen: 'life/kitchen.md', questions: 'log/questions.csv', today: '.brief/state/today.json', home: 'home.md', pieces: 'life/piano-pieces.csv', gymNotes: 'life/gym-notes.csv' }[k];
+// day rating 1–10 → smooth red → green (his pick, grill q140 21.11)
+const scoreColor = (n) => `hsl(${Math.round((Math.min(10, Math.max(1, Number(n))) - 1) / 9 * 125)} 72% 48%)`;
 
 // ---------- dates ----------
 let fmtKey;
@@ -224,7 +226,7 @@ async function load(range) {
     try { update = u ? JSON.parse(u) : null; } catch { update = null; }
     try { updateDates = JSON.parse(arch || '[]').map((f) => f.name).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n)).map((n) => n.slice(0, 10)).sort(); } catch { /* none yet */ }
   }
-  const [kitchenText, questionsText, schedText, homeText] = await Promise.all(['kitchen', 'questions', 'today', 'home'].map((k) => gh(F2(k)).catch(() => null)));
+  const [kitchenText, questionsText, schedText, homeText, piecesText, gymNotesText] = await Promise.all(['kitchen', 'questions', 'today', 'home', 'pieces', 'gymNotes'].map((k) => gh(F2(k)).catch(() => null)));
   let sched = null; try { sched = schedText ? JSON.parse(schedText) : null; } catch { sched = null; }
   const parsedLogs = await Promise.all(logFiles.map(async (f) => {
     const c = LS.get('log2:' + f.name, null);
@@ -270,7 +272,7 @@ async function load(range) {
   }
   for (const r of spendLog) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
 
-  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, foodRows, notes: csv(notesText), weightRows, allDeadlines, kitchen: kitchenText || '', homeMd: homeText || '', questions: csv(questionsText), sched, cfg: CFG, fetched: Date.now() };
+  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, foodRows, notes: csv(notesText), weightRows, allDeadlines, kitchen: kitchenText || '', homeMd: homeText || '', questions: csv(questionsText), pieces: csv(piecesText), gymNotes: csv(gymNotesText), sched, cfg: CFG, fetched: Date.now() };
 }
 
 // ---------- tiny charts ----------
@@ -442,10 +444,20 @@ function shortSets(sets) {
   for (const x of sets) { const l = g[g.length - 1]; if (l && l.kg === x.kg) l.reps.push(x.reps); else g.push({ kg: x.kg, reps: [x.reps] }); }
   return g.map((q) => `${q.kg ? kg(q.kg) + ' kg' : 'BW'} × ${q.reps.join(', ')}`).join(' · ');
 }
-function exBlock(e) {
+// total kg lifted = reps × kg per set, summed; bodyweight (0 kg) counts 0, assist machines count 0 (the kg is help, not load) · grill q142–q144
+const exVol = (e) => (isAssist(e.name) ? 0 : sum(e.sets.map((x) => (x.reps || 0) * (x.kg || 0))));
+const sessVol = (s) => sum(s.exercises.map(exVol));
+const kgTxt = (v) => Math.round(v).toLocaleString('en') + ' kg';
+// exercise notes (life/gym-notes.csv: date,time,exercise,kind,note) · kind sticky = shows every time (newest wins, empty = cleared) · workout = that day only · grill q145
+const gymNoteRows = () => [...((typeof DATA !== 'undefined' && DATA?.gymNotes) || []), ...((typeof staged === 'function' ? staged() : []).filter((i) => i.kind === 'gymNotes' && i.op === 'add')
+  .flatMap((i) => i.rows.map(([date, time, exercise, kind, note]) => ({ date, time, exercise, kind, note }))))];
+const stickyNote = (name) => gymNoteRows().filter((r) => r.kind === 'sticky' && r.exercise === name).pop()?.note || '';
+const workoutNote = (date, name) => gymNoteRows().filter((r) => r.kind === 'workout' && r.date === date && r.exercise === name).map((r) => r.note).filter(Boolean).join(' · ');
+function exBlock(e, date) {
+  const wn = date ? workoutNote(date, e.name) : '', st = stickyNote(e.name);
   const notes = [...new Set(e.sets.map((x) => x.note).filter(Boolean))];
   const shared = notes.length === 1 && e.sets.every((x) => x.note === notes[0]); // e.g. "from day log" on every set
-  return `<div class="exb"><div class="exb-h">${muscleIcon(muscleOf(e.name))}<b>${esc(e.name)}</b></div>${setTable(e.sets, e.name, notes.length && !shared)}${shared ? `<p class="sub">${esc(notes[0])}</p>` : ''}</div>`;
+  return `<div class="exb"><div class="exb-h">${muscleIcon(muscleOf(e.name))}<b>${esc(e.name)}</b></div>${wn ? `<p class="ex-n">📝 ${esc(wn)}</p>` : ''}${st ? `<p class="ex-n">📌 ${esc(st)}</p>` : ''}${setTable(e.sets, e.name, notes.length && !shared)}${shared ? `<p class="sub">${esc(notes[0])}</p>` : ''}</div>`;
 }
 const mmss = (m) => { const s = Math.round(m * 60), h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = String(s % 60).padStart(2, '0');
   return h ? `${h}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`; };
@@ -458,7 +470,7 @@ function runTable(rows, withDate = true) {
 function trainDay(x, k, sessions) {
   const s = sessions.find((q) => q.date === k), runs = (x.runs || []).filter((r) => r.date === k), d = x.days[k] || {};
   let h = `<h3 class="dh">${short(k)}</h3>`;
-  if (s) h += `<p class="sub">Gym${s.start ? ' at ' + esc(s.start) : ''} · ${s.mins != null ? s.mins + ' min' : 'time not tracked'} · ${s.exercises.length} exercise${s.exercises.length === 1 ? '' : 's'} · ${s.sets} sets</p>${s.exercises.map(exBlock).join('')}`;
+  if (s) h += `<p class="sub">Gym${s.start ? ' at ' + esc(s.start) : ''} · ${s.mins != null ? s.mins + ' min' : 'time not tracked'} · ${s.exercises.length} exercise${s.exercises.length === 1 ? '' : 's'} · ${s.sets} sets · <b>${kgTxt(sessVol(s))}</b> lifted</p>${s.exercises.map((e) => exBlock(e, k)).join('')}`;
   else if (d.gym) h += '<p class="sub">Gym, from the day log (no sets logged in the app).</p>';
   if (runs.length) h += `<p class="sub">Run${runs.length > 1 ? 's' : ''}${runs.some((r) => r.with) ? ' with ' + esc(runs.find((r) => r.with).with) : ''}</p>${runTable(runs, false)}`;
   else if (d.run) h += '<p class="sub">Run, from the day log (not logged in the app).</p>';
@@ -708,7 +720,7 @@ const CARDS = [
     const a = avg(v), pa = avg(p);
     return { big: a == null ? '—' : a.toFixed(1), unit: '/10',
       sub: `${v.length} rated day${v.length === 1 ? '' : 's'}` + (a != null && pa != null ? ` · <span class="${a >= pa ? 'good' : 'bad'}">${sign(a - pa)} vs before</span>` : ''),
-      chart: bars(s, { max: 10, hollow: (i) => !x.days[x.dates[i]]?.final }),
+      chart: bars(s, { max: 10, cls: (v) => scoreColor(v), hollow: (i) => !x.days[x.dates[i]]?.final }),
       tap: (i) => { const d = x.days[x.dates[i]]; return d?.score != null ? `${short(x.dates[i])}: ${d.score}/10${d.final ? '' : ' (provisional)'} · ${d.why}` : `${short(x.dates[i])}: not rated`; } };
   } },
   { id: 'study', title: 'Study time', render(x) {
@@ -744,9 +756,10 @@ const CARDS = [
         + (last ? ` · last ${short(last.date)}` : ''),
       head: `<button class="card-btn${live ? ' live' : ''}" data-piano>${live ? '■ Stop' : '▶ Start'}</button>`,
       chart: bars(m),
+      html: window.piecesHtml ? window.piecesHtml() : '',
       tap: (i) => { const k = x.dates[i], rows = (x.piano || []).filter((r) => r.date === k);
         return rows.length ? `${short(k)}: ${Math.round(x.days[k].piano)} min` + (rows.some((r) => r.note) ? ' · ' + rows.map((r) => r.note).filter(Boolean).join(', ') : '') : `${short(k)}: didn’t play`; },
-      wire(el) { el.querySelector('[data-piano]').addEventListener('click', () => window.openPiano?.()); } };
+      wire(el) { el.querySelector('[data-piano]').addEventListener('click', () => window.openPiano?.()); window.wirePieces?.(el); } };
   } },
   { id: 'protein', title: 'Protein', render(x) {
     const pr = x.dates.map((k) => (x.days[k]?.meals ? Math.round(x.days[k].protein) : null));
@@ -794,9 +807,9 @@ const CARDS = [
   } },
   { id: 'training', title: 'Training', ownSheet: true, render(x) {
     const g = x.dates.filter((k) => x.days[k]?.gym).length, r = x.dates.filter((k) => x.days[k]?.run).length;
-    const weeks = Math.max(1, x.dates.length / 7), last = lastTrain(x);
+    const weeks = Math.max(1, x.dates.length / 7), last = lastTrain(x), life = sum(gymSessions(x.gym).map(sessVol));
     return { big: String(g + r), unit: 'sessions',
-      sub: `${g} gym · ${r} run` + (CFG.trainingPerWeek ? ` · goal ${Math.round(CFG.trainingPerWeek * weeks)}` : '') + (last ? ` · last session ${short(last)}` : ''),
+      sub: `${g} gym · ${r} run` + (CFG.trainingPerWeek ? ` · goal ${Math.round(CFG.trainingPerWeek * weeks)}` : '') + (last ? ` · last session ${short(last)}` : '') + (life ? ` · lifetime ${kgTxt(life)} lifted` : ''),
       // gym = accent, run = --run (same colours as the calendar in the detail sheet), both = full height
       chart: bars(x.dates.map((k) => ((x.days[k]?.gym ? 1 : 0) + (x.days[k]?.run ? 1 : 0)) || null), { max: 2, cls: (v, i) => (x.days[x.dates[i]]?.gym ? 'var(--accent)' : 'var(--run)') }),
       tap: (i) => { const d = x.days[x.dates[i]] || {}; return `${short(x.dates[i])}: ${[d.gym && 'gym', d.run && 'run'].filter(Boolean).join(' + ') || 'rest'}`; },
@@ -897,7 +910,7 @@ const CARDS = [
 // item: { text, meta?, tone?: good|warn|bad|muted|focus } · text may use **bold**
 let tab = null, updShown = null; // updShown = archive date being viewed (null = latest)
 const updCache = {};
-const md = (s) => esc(s || '').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+const md = (s) => esc(s || '').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\b(10|[1-9])\/10\b/g, (m, n) => `<b style="color:${scoreColor(n)}">${m}</b>`);
 const itemHtml = (it) => typeof it === 'string' ? `<li>${md(it)}</li>`
   : `<li class="${esc(it.tone || '')}"><span>${md(it.text)}</span>${it.meta ? `<span class="meta">${md(it.meta)}</span>` : ''}</li>`;
 

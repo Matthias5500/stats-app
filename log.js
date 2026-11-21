@@ -11,6 +11,8 @@ const HEADERS = {
   piano: 'date,time,minutes,note',
   notes: 'date,time,kind,text,done',
   questions: 'id,date,kind,text,options,answer,answered',
+  pieces: 'name,status,added,last_played',
+  gymNotes: 'date,time,exercise,kind,note',
   food: 'date,time,meal,item,kcal,protein_g,where,source,with,cost_eur,tags,note',
 };
 
@@ -353,6 +355,73 @@ function openSpend() {
   });
 }
 
+// ---------- piano pieces (life/piano-pieces.csv: name,status,added,last_played) · grill q101–q103 + q136–q139 ----------
+// add in the card · tap the status chip to cycle · tick what you played when you log a session (sets last_played)
+// tip = 1 old piece (keeping/polished), the one not played for the longest; shows on the Start sheet + in the card
+const PSTAT = ['learning', 'keeping', 'polished'];
+function piecesView() {
+  const list = ((typeof DATA !== 'undefined' && DATA?.pieces) || []).filter((p) => p.name).map((p) => ({ ...p, status: PSTAT.includes(p.status) ? p.status : 'learning' }));
+  for (const it of staged()) {
+    if (it.kind !== 'pieces') continue;
+    if (it.op === 'add') it.rows.forEach(([name, status, added, last_played]) => list.push({ name, status, added, last_played }));
+    else if (it.op === 'set') { const p = [...list].reverse().find((q) => q.name === it.match.name); if (p) Object.assign(p, it.set); }
+  }
+  return list;
+}
+const daysAgo = (k) => {
+  if (!k) return 'never played';
+  const d = Math.round((Date.parse(nowKey() + 'T12:00:00Z') - Date.parse(k + 'T12:00:00Z')) / 864e5);
+  return d <= 0 ? 'today' : d === 1 ? 'yesterday' : d + ' d ago';
+};
+const oldPieceTip = (list = piecesView()) => list.filter((p) => p.status !== 'learning').sort((a, b) => (a.last_played || '').localeCompare(b.last_played || ''))[0] || null;
+const tipLine = (tip) => (tip ? `<p class="tip">🎯 Old one to play: <b>${esc(tip.name)}</b> <small>${daysAgo(tip.last_played)}</small></p>` : '');
+function piecesHtml() {
+  const list = piecesView();
+  const order = [...list].sort((a, b) => PSTAT.indexOf(a.status) - PSTAT.indexOf(b.status) || (b.last_played || '').localeCompare(a.last_played || ''));
+  return `<div class="pieces">${tipLine(oldPieceTip(list))}
+    ${list.length ? `<ul>${order.map((p) => `<li><span class="pn">${esc(p.name)}</span><small>${daysAgo(p.last_played)}</small><button type="button" class="pc-st ${p.status}" data-pst="${esc(p.name)}">${p.status}</button></li>`).join('')}</ul>`
+      : '<p class="sub">No pieces yet. Add the ones you can play.</p>'}
+    <div class="pc-add"><input type="text" placeholder="＋ piece name" autocomplete="off" enterkeyhint="done"><button type="button">Add</button></div></div>`;
+}
+function wirePieces(root) {
+  const box = root.querySelector('.pieces');
+  if (!box) return;
+  const redraw = () => { if (!box.isConnected) return; const n = document.createElement('div'); n.innerHTML = piecesHtml(); box.replaceWith(n.firstElementChild); wirePieces(root); };
+  box.querySelectorAll('[data-pst]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const name = b.dataset.pst, cur = piecesView().find((p) => p.name === name), next = PSTAT[(PSTAT.indexOf(cur?.status || 'learning') + 1) % PSTAT.length];
+    stage({ kind: 'pieces', op: 'set', match: { name }, set: { status: next }, label: `🎹 ${name} → ${next}` });
+    redraw();
+  }));
+  const inp = box.querySelector('.pc-add input');
+  const add = () => {
+    const name = inp.value.replace(/\s+/g, ' ').replace(/,/g, ' ').trim();
+    if (!name) return;
+    if (piecesView().some((p) => p.name.toLowerCase() === name.toLowerCase())) { toast('Already on the list'); return; }
+    stage({ kind: 'pieces', op: 'add', rows: [[name, 'learning', nowKey(), '']], label: `🎹 new piece ${name}` });
+    redraw();
+  };
+  box.querySelector('.pc-add button').addEventListener('click', (e) => { e.stopPropagation(); add(); });
+  inp.addEventListener('click', (e) => e.stopPropagation());
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+}
+window.piecesHtml = piecesHtml; window.wirePieces = wirePieces;
+// tick boxes on the log sheets (tip piece outlined)
+const pieceTicks = () => {
+  const l = piecesView(), tip = oldPieceTip(l);
+  if (!l.length) return '';
+  return `<label>Which pieces?</label><div class="pc-ticks">${l.map((p) => `<label class="${tip && tip.name === p.name ? 'tipped' : ''}"><input type="checkbox" data-tick value="${esc(p.name)}">${esc(p.name)}</label>`).join('')}</div>`;
+};
+// note = ticked pieces + free text; every ticked piece gets last_played = that day
+function logPieces(r, day, free) {
+  const names = [...r.querySelectorAll('[data-tick]:checked')].map((c) => c.value);
+  for (const name of names) {
+    const p = piecesView().find((q) => q.name === name);
+    if (p && (p.last_played || '') < day) stage({ kind: 'pieces', op: 'set', match: { name }, set: { last_played: day }, label: `🎹 played ${name}` });
+  }
+  return [names.join(', '), free].filter(Boolean).join(' · ');
+}
+
 // ---------- piano: start/stop timer, or add minutes by hand ----------
 const pianoRow = (start, minutes, note) => {
   const m = Math.max(1, Math.round(minutes)), d = dayKey(start);
@@ -369,13 +438,14 @@ function openPiano() {
     openSheet('Playing 🎹', `
       <p class="timer" id="p-clock">0:00</p>
       <p class="sub">since ${clock(pt.start)}</p>
-      <label for="p-note">What did you play?</label><input id="p-note" type="text" placeholder="optional, e.g. Unravel">
+      ${pieceTicks()}
+      <label for="p-note">${piecesView().length ? 'Anything else?' : 'What did you play?'}</label><input id="p-note" type="text" placeholder="optional, e.g. Unravel">
       <button class="primary" id="p-stop">■ Stop + log</button>
       <button id="p-discard" class="ghost">Discard timer</button>`, (r) => {
       tick(); pianoTick = setInterval(tick, 1000);
       r.querySelector('#p-stop').addEventListener('click', () => {
         LS.remove('pianoTimer'); clearInterval(pianoTick);
-        pianoRow(pt.start, (Date.now() - pt.start) / 60e3, r.querySelector('#p-note').value.trim());
+        pianoRow(pt.start, (Date.now() - pt.start) / 60e3, logPieces(r, dayKey(pt.start), r.querySelector('#p-note').value.trim()));
         closeSheet(); render();
       });
       const disc = r.querySelector('#p-discard');
@@ -387,11 +457,13 @@ function openPiano() {
     return;
   }
   openSheet('Piano 🎹', `
+    <div class="pieces">${tipLine(oldPieceTip())}</div>
     <button class="primary big-btn" id="p-start">▶ Start timer</button>
     <p class="sub">Keeps running when you close the app. Tap 🎹 again to stop.</p>
     <h3>Or add it by hand</h3>
     ${stepper('p-min', 30, 5, 'min')}
-    <label for="p-mnote">What did you play?</label><input id="p-mnote" type="text" placeholder="optional">
+    ${pieceTicks()}
+    <label for="p-mnote">${piecesView().length ? 'Anything else?' : 'What did you play?'}</label><input id="p-mnote" type="text" placeholder="optional">
     <label for="p-date">Day</label><input id="p-date" type="date" value="${nowKey()}">
     <button id="p-add">Add</button>`, (r) => {
     wireSteppers(r);
@@ -401,7 +473,7 @@ function openPiano() {
       if (!m) { toast('How many minutes?'); return; }
       const d = r.querySelector('#p-date').value || nowKey();
       // a past day gets noon as its time; today gets now
-      pianoRow(d === nowKey() ? Date.now() : Date.parse(d + 'T12:00:00Z'), m, r.querySelector('#p-mnote').value.trim());
+      pianoRow(d === nowKey() ? Date.now() : Date.parse(d + 'T12:00:00Z'), m, logPieces(r, d, r.querySelector('#p-mnote').value.trim()));
       closeSheet();
     });
   });
@@ -550,10 +622,12 @@ function openGym() {
       const next = done[done.length - 1] || prev[done.length] || prev[0] || { reps: 10, kg: 0 };
       return `<section class="ex">
         <div class="ex-head">${muscleIcon(muscleOf(name))}<b>${esc(name)}</b><span class="sub">${info ? `last time ${dm(info.date)}` : 'first time'}</span></div>
+        <div class="ex-sticky" data-sticky="${i}">${stickyNote(name) ? `<span>📌 ${esc(stickyNote(name))}</span><button type="button" data-st-edit="${i}">✎ edit</button>` : `<span></span><button type="button" data-st-edit="${i}">📌 add a note that stays</button>`}</div>
         ${logTable(name, done, prev)}
         <div class="set-row">${stepper('kg' + i, kg(next.kg), step, 'kg')}${stepper('reps' + i, next.reps, 1, 'reps')}
         <input type="text" class="set-note" id="note${i}" placeholder="Note for this set (optional)" autocomplete="off" enterkeyhint="done">
         <button class="primary small" data-add="${i}">+ Set ${done.length + 1}</button></div>
+        <input type="text" class="ex-note-in" data-exnote="${i}" value="${esc((wo.exNotes || {})[name] || '')}" placeholder="Note for this exercise today (optional)" autocomplete="off" enterkeyhint="done">
       </section>`;
     }).join('')}
     <h3>${wo.list.length ? 'Add exercise' : 'Pick an exercise'}</h3>
@@ -571,6 +645,24 @@ function openGym() {
       const note = r.querySelector('#note' + i).value.trim().replace(/\s+/g, ' ');
       (wo.sets[name] ||= []).push({ reps: Number(r.querySelector('#reps' + i).value) || 0, kg: Number(r.querySelector('#kg' + i).value) || 0, ...(note ? { note } : {}) });
       put(wo);
+    }));
+    // today's exercise note: kept with the running workout, written on Finish
+    r.querySelectorAll('[data-exnote]').forEach((inp) => inp.addEventListener('input', () => {
+      (wo.exNotes ||= {})[wo.list[inp.dataset.exnote]] = inp.value.replace(/\s+/g, ' ').trim(); LS.set('workout', wo);
+    }));
+    // sticky note: shows every time this exercise comes up (newest row wins, empty = cleared)
+    r.querySelectorAll('[data-st-edit]').forEach((b) => b.addEventListener('click', () => {
+      const i = b.dataset.stEdit, name = wo.list[i], box = r.querySelector(`[data-sticky="${i}"]`);
+      box.innerHTML = `<input type="text" class="ex-note-in" value="${esc(stickyNote(name))}" placeholder="e.g. seat height 4" enterkeyhint="done"><button type="button">OK</button>`;
+      const inp = box.querySelector('input'); inp.focus();
+      const ok = () => {
+        const v = inp.value.replace(/\s+/g, ' ').trim();
+        if (v === stickyNote(name)) { put(wo); return; }
+        stage({ kind: 'gymNotes', op: 'add', rows: [[nowKey(), clock(Date.now()), name, 'sticky', v]], label: v ? `📌 ${name}: ${v.slice(0, 30)}` : `📌 ${name}: note cleared` });
+        put(wo);
+      };
+      box.querySelector('button').addEventListener('click', ok);
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ok(); } });
     }));
     r.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
       const k = b.dataset.del.lastIndexOf(':'), name = b.dataset.del.slice(0, k); wo.sets[name].splice(Number(b.dataset.del.slice(k + 1)), 1); put(wo);
@@ -592,6 +684,8 @@ function openGym() {
       const ex = new Set(rows.map((x) => x[3])).size;
       LS.remove('workout');
       stage({ kind: 'gym', op: 'add', rows, label: `gym ${wo.type} · ${ex} exercise${ex === 1 ? '' : 's'}, ${rows.length} sets${m > 0 ? `, ${m} min` : ''}`, marks: { gym: true } });
+      const notes = wo.list.filter((n) => (wo.sets[n] || []).length && (wo.exNotes || {})[n]).map((n) => [date, time, n, 'workout', wo.exNotes[n]]);
+      if (notes.length) stage({ kind: 'gymNotes', op: 'add', rows: notes, label: `📝 ${notes.length} exercise note${notes.length === 1 ? '' : 's'}` });
       closeSheet();
     });
     const disc = r.querySelector('#g-discard');

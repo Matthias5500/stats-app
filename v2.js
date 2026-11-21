@@ -26,7 +26,7 @@ function drawDayHead(k, isToday) {
   $('#day-head').innerHTML = `<div class="day-head">
     <button id="pick-day" class="day-btn" aria-label="Pick a day"><b>${short(k)}</b><i>▾</i></button>
     ${isToday ? `<span class="chip ${s.today ? 'fire-chip' : ''}">🔥 ${s.cur}${s.today ? '' : ' · open'}</span>` : `<button id="back-today" class="chip">↩ Today</button>`}
-    ${d.score != null ? `<span class="chip">⭐ ${d.score}/10${d.final ? '' : ' ?'}</span>` : ''}
+    ${d.score != null ? `<span class="chip score-chip" style="--sc:${scoreColor(d.score)}">⭐ ${d.score}/10${d.final ? '' : ' ?'}</span>` : ''}
   </div>`;
   $('#pick-day').addEventListener('click', () => openCalendar(k.slice(0, 7)));
   $('#back-today')?.addEventListener('click', () => { window.viewDay = null; histDrop('day'); render(); });
@@ -159,7 +159,7 @@ function dayBody(k, isToday) {
   if (d.mood || d.energy) chips.push(`🙂 ${d.mood ?? '—'} · ⚡ ${d.energy ?? '—'}`);
   if (d.chores?.length) chips.push(d.chores.map((c) => CHORES[c]).join(' · '));
   let s = chips.length ? `<div class="chips day-chips">${chips.map((c) => `<span class="chip">${c}</span>`).join('')}</div>` : '';
-  if (d.score != null && d.why) s += `<p class="sub pad">⭐ ${d.score}/10${d.final ? '' : ' (provisional)'} · ${esc(d.why)}</p>`;
+  if (d.score != null && d.why) s += `<p class="sub pad">⭐ <b style="color:${scoreColor(d.score)}">${d.score}/10</b>${d.final ? '' : ' (provisional)'} · ${esc(d.why)}</p>`;
   const crs = Object.entries(d.courses || {}).filter(([, m]) => m >= 1).sort((a, b) => b[1] - a[1]);
   if (d.studyItems?.length || crs.length) s += `<article class="card"><h2>Study</h2>${crs.length ? `<p class="sub">${crs.map(([c, m]) => `${esc(c)} ${(m / 60).toFixed(1)} h`).join(' · ')}</p>` : ''}${d.studyItems?.length ? `<ul class="study-items">${d.studyItems.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}</article>`;
   const food = (DATA.foodRows || []).filter((r) => r.date === k);
@@ -182,7 +182,7 @@ function openCalendar(month) {
       if (k.slice(0, 7) !== month) return '<span class="pc-day out"></span>';
       const d = DATA.days[k] || {};
       const marks = (stOf(DATA.days, k) === 'earned' ? '<i class="m-study"></i>' : '') + (d.gym || d.run ? '<i class="m-train"></i>' : '') + (dl.has(k) ? '<i class="m-dead"></i>' : '');
-      return `<button class="pc-day${k === today ? ' now' : ''}${k === sel ? ' sel' : ''}${k > today ? ' future' : ''}" data-k="${k}"><b>${Number(k.slice(8))}</b><span class="marks">${marks}</span></button>`;
+      return `<button class="pc-day${k === today ? ' now' : ''}${k === sel ? ' sel' : ''}${k > today ? ' future' : ''}${d.score != null ? ' rated' : ''}"${d.score != null ? ` style="--sc:${scoreColor(d.score)}" title="${d.score}/10"` : ''} data-k="${k}"><b>${Number(k.slice(8))}</b><span class="marks">${marks}</span></button>`;
     }).join('') + '</div>';
   }
   const title = new Date(m1 + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
@@ -190,7 +190,7 @@ function openCalendar(month) {
   openSheet('Pick a day', `<div class="cal pick-cal">
     <div class="cal-head"><button class="cal-nav" data-nav="-1" aria-label="Previous month">‹</button><b>${title}</b><button class="cal-nav" data-nav="1" aria-label="Next month">›</button></div>
     <div class="cal-row dow">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d) => `<span>${d}</span>`).join('')}</div>${rows}</div>
-    <div class="cal-key"><span><i class="m-study"></i>studied</span><span><i class="m-train"></i>trained</span><span><i class="m-dead"></i>deadline</span></div>
+    <div class="cal-key"><span><i class="m-study"></i>studied</span><span><i class="m-train"></i>trained</span><span><i class="m-dead"></i>deadline</span><span><i class="m-score"></i>day rating</span></div>
     <button id="cal-today">Back to today</button>`, (r) => {
     r.querySelectorAll('[data-k]').forEach((b) => b.addEventListener('click', () => { const was = window.viewDay; window.viewDay = b.dataset.k === today ? null : b.dataset.k; closeSheet();
       if (window.viewDay && !was) histPush('day'); else if (!window.viewDay && was) histDrop('day'); window.scrollTo(0, 0); render(); }));
