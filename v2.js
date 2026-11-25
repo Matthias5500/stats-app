@@ -52,7 +52,7 @@ function drawUpdateCard(isToday) {
 function questions() {
   const today = DATA.today, t = todayView(), done = stagedQ(), out = [], hour = Number(hhmm().slice(0, 2));
   const dismissed = LS.get('qdismiss', {});
-  const add = (q) => { if (!done.has(q.id) && dismissed[q.id] !== today) out.push(q); };
+  const add = (q) => { const d = dismissed[q.id]; if (!done.has(q.id) && d !== today && d !== 'never') out.push(q); }; // 'never' = "Don't know" / typed on an app card: gone for good
   // boss's questions first
   for (const q of DATA.questions || []) {
     if (q.answer || !q.id || !q.text) continue;
@@ -98,15 +98,19 @@ function drawQuestions(isToday) {
     const input = q.type === 'time' ? '<input type="time">' : q.type === 'amount' ? '<input type="number" inputmode="decimal" step="0.01" placeholder="0.00">' : '<input type="text" placeholder="short answer">';
     return `<div class="q-row">${input}<button class="primary small" data-ok="${i}">OK</button></div>`;
   };
-  const TYPEABLE = ['yesno', 'scale', 'choice', 'time', 'amount']; // boss questions: "✎ type" swaps the controls for a free-text field
-  const typeLink = (q, i) => q.from === 'boss' && TYPEABLE.includes(q.type) ? `<button class="q-type" data-type="${i}">✎ type</button>` : '';
+  const forget = (q) => LS.set('qdismiss', { ...LS.get('qdismiss', {}), [q.id]: 'never' });
+  const TYPEABLE = ['yesno', 'scale', 'choice', 'time', 'amount']; // "✎ type" swaps the controls for a free-text field
+  const typeLink = (q, i) => TYPEABLE.includes(q.type) ? `<button class="q-type" data-type="${i}">✎ type</button>` : '';
   el.innerHTML = `<h3 class="sec-h">Questions <small>${qs.length}</small></h3>` + qs.map((q, i) => `<article class="card q-card" data-q="${i}">
     <div class="q-top"><p>${q.from === 'boss' ? '<span class="q-from">boss</span> ' : ''}${esc(q.text)}</p><button class="x" data-skip="${i}" aria-label="Not now">${q.skip ? esc(q.skip) : '✕'}</button></div>${ctl(q, i)}${typeLink(q, i)}</article>`).join('');
   el.querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', () => qs[Number(b.dataset.a)].answer(b.dataset.v)));
   const onOk = (b) => b.addEventListener('click', () => {
     const q = qs[Number(b.dataset.ok)], v = b.parentElement.querySelector('input').value.trim();
     if (!v) { toast('Fill it in first'); return; }
-    q.answer(q.type === 'amount' && !('typed' in b.parentElement.dataset) ? Number(v).toFixed(2) : v); // typed-instead = saved as-is
+    const typed = 'typed' in b.parentElement.dataset;
+    if (typed && q.from !== 'boss') { // app card typed instead: free text can't go into a price/time column → quick note for boss, card gone for good
+      forget(q); stage({ kind: 'notes', op: 'add', rows: [[nowKey(), hhmm(), 'dump', `re: ${q.text} → ${v}`, '']], label: `✎ ${v.slice(0, 40)}` }); return; }
+    q.answer(q.type === 'amount' && !typed ? Number(v).toFixed(2) : v); // typed-instead = saved as-is
   });
   el.querySelectorAll('[data-ok]').forEach(onOk);
   el.querySelectorAll('[data-type]').forEach((b) => b.addEventListener('click', () => {
@@ -117,7 +121,9 @@ function drawQuestions(isToday) {
     onOk(row.querySelector('[data-ok]'));
     row.querySelector('input').focus();
   }));
-  el.querySelectorAll('[data-skip]').forEach((b) => b.addEventListener('click', () => { LS.set('qdismiss', { ...LS.get('qdismiss', {}), [qs[Number(b.dataset.skip)].id]: DATA.today }); render(); }));
+  // ✕ = not today; "Don't know" / "Don't remember" = never again (a price card got re-asked 100+ times before 25.11)
+  el.querySelectorAll('[data-skip]').forEach((b) => b.addEventListener('click', () => { const q = qs[Number(b.dataset.skip)];
+    if (q.skip) forget(q); else LS.set('qdismiss', { ...LS.get('qdismiss', {}), [q.id]: DATA.today }); render(); }));
 }
 window.v2Questions = questions;
 
