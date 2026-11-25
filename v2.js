@@ -127,6 +127,29 @@ function drawQuestions(isToday) {
 }
 window.v2Questions = questions;
 
+// ---------- 🤖 agent sheet: what the questions/build/review agents did (log/agent-log.csv) · decisions.md 2026-11-25 ----------
+const AGENT_KIND = { ask: ['❓', 'asked'], file: ['📥', 'filed'], fix: ['🧹', 'fix'], build: ['🔨', 'build'], revert: ['↩️', 'revert'], self: ['📝', 'own rules'] };
+function openAgent() {
+  const today = DATA.today, wk = addDays(today, -6);
+  const log = (DATA.agentLog || []).filter((r) => r.date && r.kind).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const inWeek = (k) => log.filter((r) => r.kind === k && r.date >= wk).length;
+  const qs = DATA.questions || [];
+  const open = qs.filter((q) => q.id && q.text && !q.answer).length;
+  const answered = qs.filter((q) => q.answer && !/^⏭/.test(q.answer) && (q.answered || '').slice(0, 10) >= wk).length;
+  const tiles = [[open, 'open now'], [answered, 'answered'], [inWeek('fix'), 'fixes'], [inWeek('build'), 'builds']]
+    .map(([n, l]) => `<div class="ag-tile"><b>${n}</b><span>${l}</span></div>`).join('');
+  const days = [...new Set(log.map((r) => r.date))];
+  const list = days.length ? days.map((d) => `<h3 class="sec-h">${d === today ? 'Today' : short(d)}</h3><div class="card ag-day">${log.filter((r) => r.date === d).map((r) => {
+    const [ic, kl] = AGENT_KIND[r.kind] || ['•', r.kind];
+    return `<details class="ag-row"><summary><span class="ag-ic">${ic}</span><span class="ag-sum">${esc(r.summary || '')}</span><small>${esc(r.time || '')}</small></summary>
+      <p class="sub">${esc(kl)} · ${esc(r.agent || 'agent')} agent · ${esc(r.date)} ${esc(r.time || '')}${r.commit ? ` · commit <code>${esc(r.commit)}</code>` : ''}</p></details>`;
+  }).join('')}</div>`).join('') : '<p class="sub pad">Nothing logged yet. The agent writes here at the next update, done or switch.</p>';
+  const dumb = (DATA.dontAsk || []).filter((r) => r.text);
+  const dumbHtml = `<h3 class="sec-h">Never ask again <small>${dumb.length}</small></h3>${dumb.length ? `<div class="card"><ul class="list">${dumb.map((r) => `<li><span>${esc(r.text)}</span><span>${short(r.date)}</span></li>`).join('')}</ul></div>` : '<p class="sub pad">Empty. Type “dumb” via ✎ on a question to add it.</p>'}`;
+  openSheet('🤖 Agent', `<div class="ag-tiles">${tiles}</div><p class="sub ag-note">Answered, fixes, builds: last 7 days</p>${list}${dumbHtml}`);
+}
+$('#open-agent').addEventListener('click', () => { if (typeof DATA === 'undefined' || !DATA) { toast('Still loading'); return; } openAgent(); });
+
 // ---------- schedule (a copy boss writes into the repo; the app can't read Google Calendar) + deadlines ----------
 function drawSched(k, isToday) {
   const el = $('#sched'), s = DATA.sched, today = DATA.today;

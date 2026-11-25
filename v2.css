@@ -148,3 +148,20 @@ body.graph-on #graph { flex: 1; min-height: 0; }
 .ex-sticky button { border: 0; background: transparent; color: var(--accent); font-size: 13px; padding: 2px 4px; cursor: pointer; }
 .ex-note-in { width: 100%; margin-top: 6px; }
 .exb .ex-n { font-size: 13px; color: var(--muted); margin: 2px 0 4px; }
+
+/* 🤖 agent sheet */
+.ag-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 4px; }
+.ag-note { margin: 0 2px 12px; font-size: 12px; }
+.ag-tile { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); text-align: center; }
+.ag-tile b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.ag-tile span { font-size: 11px; color: var(--muted); line-height: 1.2; }
+.ag-day { padding: 4px 12px; margin-bottom: 12px; min-width: 0; overflow: hidden; }
+.ag-row, .ag-row summary { min-width: 0; }
+.ag-row + .ag-row { border-top: 1px solid var(--line); }
+.ag-row summary { display: flex; gap: 8px; align-items: baseline; padding: 9px 0; cursor: pointer; list-style: none; }
+.ag-row summary::-webkit-details-marker { display: none; }
+.ag-ic { flex: none; }
+.ag-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-row[open] .ag-sum { white-space: normal; }
+.ag-row small { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ag-row p { margin: 0 0 8px 26px; overflow-wrap: anywhere; }

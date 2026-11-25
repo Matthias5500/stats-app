@@ -24,12 +24,12 @@ applyTheme();
 // localhost only: ?api=http://localhost:8791 points the app at tools/mock-github.py (tests never touch the real repo)
 const API = (['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).get('api')) || 'https://api.github.com';
 const H = 3600e3;
-const APP_V = 'v2.5'; // shown in the status line; bump together with SHELL in sw.js
+const APP_V = 'v2.6'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
 // files v2 added; stats.json may name them, else these defaults
-const F2 = (k) => CFG.files[k] || { kitchen: 'life/kitchen.md', questions: 'log/questions.csv', today: '.brief/state/today.json', home: 'home.md', pieces: 'life/piano-pieces.csv', gymNotes: 'life/gym-notes.csv' }[k];
+const F2 = (k) => CFG.files[k] || { kitchen: 'life/kitchen.md', questions: 'log/questions.csv', today: '.brief/state/today.json', home: 'home.md', pieces: 'life/piano-pieces.csv', gymNotes: 'life/gym-notes.csv', agentLog: 'log/agent-log.csv', dontAsk: 'log/dont-ask.csv' }[k];
 // day rating 1–10 → smooth red → green (his pick, grill q140 21.11)
 const scoreColor = (n) => `hsl(${Math.round((Math.min(10, Math.max(1, Number(n))) - 1) / 9 * 125)} 72% 48%)`;
 
@@ -226,7 +226,7 @@ async function load(range) {
     try { update = u ? JSON.parse(u) : null; } catch { update = null; }
     try { updateDates = JSON.parse(arch || '[]').map((f) => f.name).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n)).map((n) => n.slice(0, 10)).sort(); } catch { /* none yet */ }
   }
-  const [kitchenText, questionsText, schedText, homeText, piecesText, gymNotesText] = await Promise.all(['kitchen', 'questions', 'today', 'home', 'pieces', 'gymNotes'].map((k) => gh(F2(k)).catch(() => null)));
+  const [kitchenText, questionsText, schedText, homeText, piecesText, gymNotesText, agentLogText, dontAskText] = await Promise.all(['kitchen', 'questions', 'today', 'home', 'pieces', 'gymNotes', 'agentLog', 'dontAsk'].map((k) => gh(F2(k)).catch(() => null)));
   let sched = null; try { sched = schedText ? JSON.parse(schedText) : null; } catch { sched = null; }
   const parsedLogs = await Promise.all(logFiles.map(async (f) => {
     const c = LS.get('log2:' + f.name, null);
@@ -272,7 +272,7 @@ async function load(range) {
   }
   for (const r of spendLog) if (r.date > lastImport && Number(r.eur)) spends.push({ date: r.date, what: r.what, cat: r.category, eur: Number(r.eur) });
 
-  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, foodRows, notes: csv(notesText), weightRows, allDeadlines, kitchen: kitchenText || '', homeMd: homeText || '', questions: csv(questionsText), pieces: csv(piecesText), gymNotes: csv(gymNotesText), sched, cfg: CFG, fetched: Date.now() };
+  return { today, update, updateDates, days, weights, deadlines, spends, gym, runs, piano, habits, spendLog, foodRows, notes: csv(notesText), weightRows, allDeadlines, kitchen: kitchenText || '', homeMd: homeText || '', questions: csv(questionsText), pieces: csv(piecesText), gymNotes: csv(gymNotesText), agentLog: csv(agentLogText), dontAsk: csv(dontAskText), sched, cfg: CFG, fetched: Date.now() };
 }
 
 // ---------- tiny charts ----------
