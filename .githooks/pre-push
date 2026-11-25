@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Free UI smoke test before every push (2026-11-25). Blocks the push on failure. Skip once: git push --no-verify (say why).
+cd "$(git rev-parse --show-toplevel)" || exit 0
+command -v node >/dev/null && { command -v chromium >/dev/null || command -v chromium-browser >/dev/null; } || { echo "smoke: no node/chromium here, skipped"; exit 0; }
+tools/smoke.sh || { echo "push blocked by the smoke test (tools/smoke.sh)"; exit 1; }

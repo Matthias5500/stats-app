@@ -24,7 +24,7 @@ applyTheme();
 // localhost only: ?api=http://localhost:8791 points the app at tools/mock-github.py (tests never touch the real repo)
 const API = (['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).get('api')) || 'https://api.github.com';
 const H = 3600e3;
-const APP_V = 'v2.8'; // shown in the status line; bump together with SHELL in sw.js
+const APP_V = 'v2.9'; // shown in the status line; bump together with SHELL in sw.js
 let CFG = {}; // loaded from stats.json in the data repo
 const BUDGET = () => CFG.budget, PROTEIN_GOAL = () => CFG.proteinGoal, KCAL_GOAL = () => CFG.kcalGoal, FLOSS_START = () => CFG.flossStart || '0000', MOUTH_START = () => CFG.mouthStart || '0000';
 const F = (k) => CFG.files[k];
