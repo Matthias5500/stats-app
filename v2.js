@@ -151,7 +151,24 @@ function openAgent() {
   const loopHtml = ls ? `<h3 class="sec-h">Is it improving? <small>7 d vs week before</small></h3><div class="card"><ul class="list">${LOOP.filter(([k]) => Array.isArray(ls[k])).map(([k, l]) => {
     const [a, b] = ls[k], cls = a < b ? 'good' : a > b ? 'bad' : '';
     return `<li><span>${l}</span><span class="${cls}">${a} <small>(${b})</small></span></li>`; }).join('')}<li><span>CLAUDE.md · startup read</span><span>${ls.claude_md_kb} KB · ${ls.startup_kb} KB</span></li></ul></div>` : '';
-  openSheet('🤖 Agent', `<div class="ag-tiles">${tiles}</div><p class="sub ag-note">Answered, fixes, builds: last 7 days</p>${loopHtml}${list}${dumbHtml}`);
+  // Bossbench (decisions 2026-11-25): trend, session scorecard, north star, running experiments
+  const L = DATA.loopStats || {}, tr = L.trend || {}, f = (v) => (v == null ? '–' : v);
+  const better = (a, b, lowGood) => (a == null || b == null || a === b ? '' : (lowGood ? a < b : a > b) ? 'good' : 'bad');
+  const benchHtml = tr.this ? `<h3 class="sec-h">Bossbench <small>this week (last week)</small></h3><div class="card"><ul class="list">
+    <li><span>mistakes per 10 messages</span><span class="${better(tr.this.mistakes_per_10_msgs, tr.prev?.mistakes_per_10_msgs, true)}">${f(tr.this.mistakes_per_10_msgs)} <small>(${f(tr.prev?.mistakes_per_10_msgs)})</small></span></li>
+    <li><span>answers per active study hour</span><span class="${better(tr.this.answers_per_active_hour, tr.prev?.answers_per_active_hour, false)}">${f(tr.this.answers_per_active_hour)} <small>(${f(tr.prev?.answers_per_active_hour)})</small></span></li></ul></div>` : '';
+  const sessHtml = (L.sessions || []).length ? `<h3 class="sec-h">Sessions <small>mistakes · output</small></h3><div class="card"><ul class="list">${L.sessions.slice(0, 8).map((x) =>
+    `<li><span>${esc(short(x.start.slice(0, 10)))} ${esc(x.start.slice(11))} · ${esc(x.type)}${x.course ? ' ' + esc(x.course.split(/[ ,:]/)[0]) : ''} <small>${x.active_min} min</small></span><span><span class="${x.mistakes ? 'bad' : 'good'}">${x.mistakes} ✗</span>${x.answers != null ? ` · ${x.answers} ✓` : ''}</span></li>`).join('')}</ul></div>` : '';
+  const ns = L.northstar || {}, months = Object.keys(ns).slice(-3);
+  const nsHtml = months.length ? `<h3 class="sec-h">North star <small>per month</small></h3><div class="card"><ul class="list">
+    ${[['study_h', 'study hours'], ['exams_sat', 'exams/tests sat'], ['deregs', 'deregistrations'], ['gym_days', 'gym/run days'], ['sleep_h', 'avg sleep (h)']].map(([k, l]) =>
+      `<li><span>${l}</span><span>${months.map((m) => f(ns[m][k])).join(' · ')}</span></li>`).join('')}
+    <li><span><small>months</small></span><span><small>${months.map((m) => m.slice(5)).join(' · ')}</small></span></li></ul></div>` : '';
+  const ex = L.experiments || [], due = new Set(L.experiments_due || []);
+  const expHtml = ex.length ? `<h3 class="sec-h">Experiments <small>${ex.length} running</small></h3><div class="card">${ex.map((e) =>
+    `<details class="ag-row"><summary><span class="ag-ic">${due.has(e.id) ? '⏰' : '🧪'}</span><span class="ag-sum">${esc(e.change)}</span><small>${esc(short(e.check_date))}</small></summary>
+    <p class="sub">${esc(e.hypothesis)} · ${esc(e.metric)}: ${esc(e.baseline)} → target ${esc(e.target)}</p></details>`).join('')}</div>` : '';
+  openSheet('🤖 Agent', `<div class="ag-tiles">${tiles}</div><p class="sub ag-note">Answered, fixes, builds: last 7 days</p>${benchHtml}${loopHtml}${sessHtml}${nsHtml}${expHtml}${list}${dumbHtml}`);
 }
 $('#open-agent').addEventListener('click', () => { if (typeof DATA === 'undefined' || !DATA) { toast('Still loading'); return; } openAgent(); });
 
