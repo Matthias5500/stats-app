@@ -146,7 +146,12 @@ function openAgent() {
   }).join('')}</div>`).join('') : '<p class="sub pad">Nothing logged yet. The agent writes here at the next update, done or switch.</p>';
   const dumb = (DATA.dontAsk || []).filter((r) => r.text);
   const dumbHtml = `<h3 class="sec-h">Never ask again <small>${dumb.length}</small></h3>${dumb.length ? `<div class="card"><ul class="list">${dumb.map((r) => `<li><span>${esc(r.text)}</span><span>${short(r.date)}</span></li>`).join('')}</ul></div>` : '<p class="sub pad">Empty. Type “dumb” via ✎ on a question to add it.</p>'}`;
-  openSheet('🤖 Agent', `<div class="ag-tiles">${tiles}</div><p class="sub ag-note">Answered, fixes, builds: last 7 days</p>${list}${dumbHtml}`);
+  // loop health (.brief/state/loopstats.json, written by .brief/bin/loopstats.py at every session start): lower = better
+  const ls = DATA.loopStats?.metrics, LOOP = [['corrections', 'your corrections'], ['math_flags', 'broken-math replies'], ['retro_guesses', 'guesses (retros)'], ['agent_reverts', 'agent reverts'], ['questions_reasked', 're-asked questions']];
+  const loopHtml = ls ? `<h3 class="sec-h">Is it improving? <small>7 d vs week before</small></h3><div class="card"><ul class="list">${LOOP.filter(([k]) => Array.isArray(ls[k])).map(([k, l]) => {
+    const [a, b] = ls[k], cls = a < b ? 'good' : a > b ? 'bad' : '';
+    return `<li><span>${l}</span><span class="${cls}">${a} <small>(${b})</small></span></li>`; }).join('')}<li><span>CLAUDE.md · startup read</span><span>${ls.claude_md_kb} KB · ${ls.startup_kb} KB</span></li></ul></div>` : '';
+  openSheet('🤖 Agent', `<div class="ag-tiles">${tiles}</div><p class="sub ag-note">Answered, fixes, builds: last 7 days</p>${loopHtml}${list}${dumbHtml}`);
 }
 $('#open-agent').addEventListener('click', () => { if (typeof DATA === 'undefined' || !DATA) { toast('Still loading'); return; } openAgent(); });
 
